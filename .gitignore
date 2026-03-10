@@ -1,0 +1,32 @@
+# Secrets and credentials
+kalshi-config.json
+*.key
+*.key.txt
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Logs and data
+*.log
+*.log.*
+kalshi-data.json
+kalshi-weekly-report.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/
