@@ -259,22 +259,53 @@ class DataFetcher:
         self.cache[key] = (val, time.time())
         return val
 
-    def fetch_all(self):
-        """Run before each scan. Populates self.brief with latest data."""
+    # Which FRED series each market category needs
+    FRED_BY_CATEGORY = {
+        "fed_rates": ["fed_funds", "treasury_10y", "treasury_2y"],
+        "inflation": ["cpi", "core_cpi"],
+        "employment": ["unemployment", "nonfarm", "jobless_claims"],
+        "gdp_growth": ["fed_funds"],
+        "markets": ["treasury_10y", "treasury_2y"],
+        "energy": ["gas_price"],
+    }
+
+    def fetch_all(self, market_categories=None):
+        """Run before each scan. Populates self.brief with latest data.
+
+        market_categories: optional set of category strings from the current batch.
+            If provided, only fetches data relevant to those categories (saves HTTP calls).
+            If None, fetches everything (backwards compatible).
+        """
         self.brief = {}
         self.feed_status = {"nws": False, "fred": False}
-        # NWS -- no key needed
-        try:
-            self.brief["nws_forecasts"] = self._fetch_nws_batch()
-            if self.brief["nws_forecasts"]:
-                self.feed_status["nws"] = True
-        except Exception as e:
-            log.warning(f"NWS prefetch failed: {e}")
+
+        need_nws = market_categories is None or "weather" in market_categories
+        need_fred_cats = set()
+        if market_categories is None:
+            need_fred_cats = set(self.FRED_BY_CATEGORY.keys())
+        else:
+            need_fred_cats = market_categories & set(self.FRED_BY_CATEGORY.keys())
+
+        # NWS -- only if weather markets exist
+        if need_nws:
+            try:
+                self.brief["nws_forecasts"] = self._fetch_nws_batch()
+                if self.brief["nws_forecasts"]:
+                    self.feed_status["nws"] = True
+            except Exception as e:
+                log.warning(f"NWS prefetch failed: {e}")
+                self.brief["nws_forecasts"] = {}
+        else:
+            log.debug("Data prefetch: skipping NWS (no weather markets)")
             self.brief["nws_forecasts"] = {}
-        # FRED -- requires key
-        if self.fred_key:
+
+        # FRED -- only series needed by current market categories
+        if self.fred_key and need_fred_cats:
             fred_ok = 0
-            for key in ["fed_funds","cpi","core_cpi","unemployment","nonfarm","jobless_claims","gas_price","treasury_10y","treasury_2y"]:
+            needed_series = set()
+            for cat in need_fred_cats:
+                needed_series.update(self.FRED_BY_CATEGORY.get(cat, []))
+            for key in needed_series:
                 try:
                     self.brief[key] = self._fetch_fred(key)
                     if self.brief[key]: fred_ok += 1
@@ -283,11 +314,17 @@ class DataFetcher:
                     self.brief[key] = None
             if fred_ok > 0:
                 self.feed_status["fred"] = True
+            skipped = 9 - len(needed_series)
+            if skipped > 0:
+                log.debug(f"Data prefetch: skipped {skipped} irrelevant FRED series")
+        elif not need_fred_cats:
+            log.debug("Data prefetch: skipping FRED (no econ/finance markets)")
+
         data_count = sum(1 for v in self.brief.values() if v)
-        if data_count == 0:
+        if data_count == 0 and (need_nws or need_fred_cats):
             log.warning("Data prefetch: ZERO feeds loaded -- AI will rely on web search only")
-        else:
-            log.info(f"Data prefetch: {data_count} feeds loaded (NWS:{'OK' if self.feed_status['nws'] else 'FAIL'} FRED:{'OK' if self.feed_status['fred'] else 'FAIL'})")
+        elif data_count > 0:
+            log.info(f"Data prefetch: {data_count} feeds loaded (NWS:{'OK' if self.feed_status['nws'] else 'SKIP'} FRED:{'OK' if self.feed_status['fred'] else 'SKIP'})")
         return self.brief
 
     def _fetch_nws_batch(self):
@@ -1453,23 +1490,26 @@ class DebateEngine:
         if e < self._gap: time.sleep(self._gap - e)
         self._last = time.time()
 
-    def _call(self, prompt, max_tok=1200, retries=2):
+    def _call(self, prompt, max_tok=1200, retries=2, use_search=True):
+        """Call Claude API. Set use_search=False for synthesis/analysis-only calls (saves tokens)."""
         self._throttle()
+        tools = [{"type":"web_search_20250305","name":"web_search"}] if use_search else []
         for attempt in range(retries):
             try:
                 if HAS_SDK:
-                    resp = self.client.messages.create(
-                        model="claude-sonnet-4-20250514", max_tokens=max_tok,
-                        tools=[{"type":"web_search_20250305","name":"web_search"}],
+                    kwargs = dict(model="claude-sonnet-4-20250514", max_tokens=max_tok,
                         messages=[{"role":"user","content":prompt}])
+                    if tools: kwargs["tools"] = tools
+                    resp = self.client.messages.create(**kwargs)
                     return "\n".join(b.text for b in resp.content if hasattr(b,"text"))
                 else:
+                    body = {"model":"claude-sonnet-4-20250514","max_tokens":max_tok,
+                            "messages":[{"role":"user","content":prompt}]}
+                    if tools: body["tools"] = tools
                     r = req_lib.post("https://api.anthropic.com/v1/messages",
                         headers={"Content-Type":"application/json","x-api-key":self.api_key,
                                  "anthropic-version":"2023-06-01"},
-                        json={"model":"claude-sonnet-4-20250514","max_tokens":max_tok,
-                              "tools":[{"type":"web_search_20250305","name":"web_search"}],
-                              "messages":[{"role":"user","content":prompt}]}, timeout=120)
+                        json=body, timeout=120)
                     if r.status_code == 429:
                         w = 60*(attempt+1); log.warning(f"Rate limit, wait {w}s"); time.sleep(w); continue
                     r.raise_for_status()
@@ -1503,59 +1543,20 @@ LIVE DATA (pre-fetched from official sources -- use these as ground truth):
 {data_brief}
 
 IMPORTANT: Compare the live data above DIRECTLY to the market prices. If NWS says 62°F and a market asks "above 58°F?" priced at 50c, that's concrete evidence of a 10%+ edge. If FRED shows Fed Funds at 5.33% and a market implies otherwise, that's edge."""
-        if not lines: return []
-        mlist = "\n".join(lines[:CFG["markets_per_scan"]])
 
-        prompt = f"""You are an AGGRESSIVE prediction market trader. Your job is to FIND EDGE AND EXPLOIT IT. You are hungry for trades. The market is often wrong and slow to react. Be bold.
+        prompt = f"""You are an aggressive prediction market trader. Find edge and exploit it. Markets are slow to react. Be bold. A 3-5%% edge IS worth trading.
 
 TODAY: {datetime.datetime.now().strftime("%A, %B %d, %Y %I:%M %p")}
 
-TASK: From these markets, identify up to 5 tradeable opportunities. Look for ANY edge -- not just massive ones. A 3-5%% edge IS worth trading.
-
-AGGRESSIVE PLAYBOOK -- think like a shark:
-
-1. STALE PRICES: Markets often lag behind breaking news by hours. Search for the LATEST news on each topic. If reality has changed but the price hasn't, ATTACK.
-
-2. WEATHER EXPLOITS: NWS forecasts update every few hours. If NWS says 72F and a market prices "above 65F" at only 70c, that's free money. Check forecasts for ALL weather markets.
-
-3. NEAR-EXPIRY PICKS: Markets closing in <6h with prices between 15-85c are goldmines. Reality is usually clearer than the market thinks near expiry. If you can determine the likely outcome, BET.
-
-4. CONSENSUS VS PRICE: When polls, forecasts, or expert consensus clearly disagree with the market price by even 5%%, that's tradeable edge.
-
-5. ASYMMETRIC BETS: A contract at 10c that should be 20c is a 100%% ROI. Look for cheap contracts where the true probability is even slightly higher.
-
-6. DATA ALREADY RELEASED: If a jobs report, CPI print, or court ruling already happened today but the market hasn't moved, that's instant edge.
-
-7. MOMENTUM PLAYS: If a price has been trending in one direction and the underlying fundamentals support it continuing, ride the wave.
-
-RESEARCH CHECKLIST:
-- WEATHER: Search NWS forecasts for each city mentioned. Compare temp/precip to market thresholds.
-- ECONOMICS: Search latest data releases (BLS, FRED, Fed speakers). Compare to market prices.
-- POLITICS: Search latest news on the specific topic. Has something happened that markets missed?
-- CRYPTO/STOCKS: Search current prices. Is the market stale vs current reality?
-- EVENTS: Search for latest updates on sports, awards, trials, launches, etc.
-
-RULES:
-- Return up to 5 candidates (more is better -- be aggressive)
-- Even a 3%% edge is worth flagging
-- Search for CURRENT data, not yesterday's
-- Be concrete: cite the specific number or fact you found
-- You are TRYING to find trades. An empty list means you failed.
+FIND EDGE BY: Searching for CURRENT data (NWS forecasts, prices, news, data releases) and comparing to market prices. Stale prices after news = free money. Near-expiry (<6h) markets with clear outcomes = goldmines. Cheap contracts (10-20c) where true prob is higher = asymmetric bets.
 
 MARKETS:
 {mlist}
 {data_section}
 
-CRITICAL RULES FOR YOUR RESPONSE:
-- Each entry MUST have the EXACT ticker from the market list above (e.g. "KXTEMP-25MAR11-PHI-T50-B60")
-- Do NOT group multiple markets into one entry
-- Do NOT use descriptions like "Multiple weather markets" as tickers
-- One JSON object per individual market
-- The ticker field must EXACTLY match a ticker shown in the MARKETS section above
-
-Return ONLY a JSON array:
-[{{{{"ticker":"KXTEMP-25MAR11-PHI-T50-B60","title":"Philadelphia temp above 60F","category":"weather","market_yes_cents":65,"initial_edge_estimate":8,"side":"YES","evidence":"NWS forecast 72F, market implies only 65%% chance of >65F","is_cant_miss":false}}}}]
-Return [] ONLY if you truly cannot find ANY edge after thorough research."""
+Return up to 5 candidates as a JSON array. Use EXACT tickers from above. One JSON object per market.
+[{{{{"ticker":"EXACT-TICKER-HERE","title":"short desc","category":"weather","market_yes_cents":65,"initial_edge_estimate":8,"side":"YES","evidence":"specific fact vs market price","is_cant_miss":false}}}}]
+Return [] ONLY if no edge found after research."""
 
         for attempt in range(2):
             try:
@@ -1729,10 +1730,10 @@ RISK_FACTORS: [what could go wrong for YES holders in the next 24h]"""
 {market_context}
 
 BULL CASE (prob={bull_prob}%, floor={bull_floor}%):
-{bull_text[:500]}
+{bull_text[:700]}
 
 BEAR CASE (prob={bear_prob}%, ceiling={bear_ceiling}%):
-{bear_text[:500]}
+{bear_text[:700]}
 
 DEBATE METRICS:
 - Bull estimate: {bull_prob}% | Bear estimate: {bear_prob}%
@@ -1760,7 +1761,7 @@ PRICE_CENTS: [integer 1-99, your bid price]
 CONTRACTS: [integer 1-20]"""
 
         log.debug(f"SYNTHESIS prompt ({len(synthesis_prompt)} chars): {synthesis_prompt[:300]}...")
-        synth_text = self._call(synthesis_prompt, 800)
+        synth_text = self._call(synthesis_prompt, 800, use_search=False)  # No web search needed for synthesis
         log.debug(f"SYNTHESIS response: {synth_text[:500]}")
         result = self._parse_synthesis(synth_text, yc, bull_prob, bear_prob)
         result["bull_prob"] = bull_prob
@@ -2238,9 +2239,20 @@ class Agent:
         for m in mkts:
             if "platform" not in m: m["platform"] = "kalshi"
 
-        # ── PRE-FETCH LIVE DATA (NWS + FRED) ──
+        # ── PRE-FETCH LIVE DATA (only what's needed for current markets) ──
         SHARED["status"]="Fetching live data..."
-        self.data.fetch_all()
+        # Quick category scan to determine which data feeds to fetch
+        cat_rules = CFG.get("category_rules", {})
+        active_categories = set()
+        for m in mkts:
+            text = " ".join(str(m.get(k,"")) for k in ["title","ticker","category","subtitle"]).lower()
+            for cat_name, cat_kws in cat_rules.items():
+                if any(kw in text for kw in cat_kws):
+                    active_categories.add(cat_name)
+                    break
+        if active_categories:
+            log.info(f"Active market categories: {', '.join(sorted(active_categories))}")
+        self.data.fetch_all(market_categories=active_categories if active_categories else None)
 
         # ══════════════════════════════════════
         # PHASE 1: CROSS-PLATFORM ARBITRAGE (fastest, no AI)
