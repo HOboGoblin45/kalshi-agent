@@ -5,7 +5,7 @@
     "fred_api_key": "8e7083141dcc201148fa0864d63202c0",
     "environment": "prod",
 
-    "polymarket_enabled": false,
+    "polymarket_enabled": true,
     "polymarket_private_key": "",
     "polymarket_api_key": "",
     "polymarket_api_secret": "",
