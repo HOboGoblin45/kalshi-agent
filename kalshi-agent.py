@@ -1,5 +1,5 @@
 """
-Kalshi AI Trading Agent v5 -- Bull/Bear Debate + Arbitrage + Dashboard
+Kalshi AI Trading Agent v6 -- Cross-Platform Arbitrage + Bull/Bear Debate + Dashboard
 http://localhost:9000
 
 Inspired by:
@@ -7,12 +7,15 @@ Inspired by:
 - prediction-market-arbitrage-bot (cross-market arbitrage math)
 - Ezekiel Njuguna's two-layer architecture (brain/hands separation)
 
-Key innovations over v4:
+Key innovations over v5:
+- POLYMARKET INTEGRATION: Dual-platform trading (Kalshi + Polymarket)
+- CROSS-PLATFORM ARBITRAGE: Guaranteed profit when same market mispriced across platforms
+- BEST-PRICE ROUTING: Directional trades route to cheapest platform
+- QUICK-FLIP SCALPING: Buy cheap contracts (3-15c) with 2x sell targets
+- COMPOUNDING TIERS: Dynamic bet sizing that scales with bankroll growth
 - Bull vs Bear DEBATE protocol: AI argues both sides before deciding
 - Within-market arbitrage scanner (no AI needed, math only)
 - Calibration tracking (log predictions to measure accuracy over time)
-- Quick-flip scanning for cheap contracts with high % upside
-- Smarter token usage: cache markets, debate only top candidate
 
   python kalshi-agent.py --config kalshi-config.json
   python kalshi-agent.py --config kalshi-config.json --dry-run
@@ -32,11 +35,27 @@ try:
 except ImportError:
     HAS_SDK=False
 
+# Polymarket integration
+try:
+    from py_clob_client.client import ClobClient
+    from py_clob_client.clob_types import OrderArgs, OrderType
+    from py_clob_client.constants import POLYGON
+    HAS_POLYMARKET=True
+except ImportError:
+    HAS_POLYMARKET=False
+
+try:
+    from eth_account import Account as EthAccount
+    HAS_ETH_ACCOUNT=True
+except ImportError:
+    HAS_ETH_ACCOUNT=False
+
 DEFAULTS={
     "kalshi_api_key_id":"","kalshi_private_key_path":"","anthropic_api_key":"",
     "environment":"prod",
-    "scan_interval_minutes":5,
-    "markets_per_scan":20,
+    "scan_interval_minutes":3,
+    "ai_scan_interval_multiplier":5,  # AI debate runs every N scans (e.g., 5 = every 15min at 3min scans)
+    "markets_per_scan":40,
     "deep_dive_top_n":2,
     "market_cache_minutes":15,
     "target_keywords":["fed","fomc","interest rate","inflation","cpi","pce","gdp","recession",
@@ -72,14 +91,37 @@ DEFAULTS={
         "energy":["gas price","oil price","oil production","opec","wti","brent","gasoline"],
         "policy":["sec","regulation","congress","legislation","bill","executive order","tariff","trade war","crypto regulation","bitcoin etf","stablecoin","debt ceiling","government shutdown","sanctions"]
     },
-    "max_bet_per_trade":5.00,
-    "max_total_exposure":25.00,
-    "max_daily_trades":8,
+    # Polymarket integration
+    "polymarket_enabled":False,
+    "polymarket_private_key":"",
+    "polymarket_api_key":"",
+    "polymarket_api_secret":"",
+    "polymarket_api_passphrase":"",
+    "polymarket_funder":"",
+    "polymarket_fee_per_contract":0.00,  # Most Polymarket markets are 0% fee
+    # Cross-platform arbitrage
+    "cross_arb_enabled":True,
+    "cross_arb_min_profit_cents":2,  # Minimum profit per arb pair
+    "cross_arb_max_cost":10.00,  # Max cost per arb execution
+    "cross_arb_match_threshold":0.70,  # Title similarity threshold
+    # Quick-flip scalping
+    "quickflip_enabled":True,
+    "quickflip_max_bet":3.00,
+    "quickflip_min_price":3,
+    "quickflip_max_price":15,
+    "quickflip_target_multiplier":2.0,
+    # Compounding / aggressive mode
+    "aggressive_mode":False,
+    "compounding_enabled":True,
+    # Trading parameters (aggressive defaults in v6)
+    "max_bet_per_trade":8.00,
+    "max_total_exposure":35.00,
+    "max_daily_trades":15,
     "max_daily_loss":15.00,
-    "min_confidence":70,
-    "min_edge_pct":6,
-    "kelly_fraction":0.20,
-    "min_volume":20,
+    "min_confidence":65,
+    "min_edge_pct":5,
+    "kelly_fraction":0.30,
+    "min_volume":10,
     "min_close_hours":0.5,
     "max_close_hours":48,
     "cant_miss_edge_pct":15,
@@ -116,7 +158,11 @@ BASE_URLS={"prod":"https://api.elections.kalshi.com/trade-api/v2","demo":"https:
 
 SHARED={"enabled":True,"status":"Starting...","balance":0,"last_scan":"Never",
     "next_scan":"--","scan_count":0,"log_lines":[],"dry_run":False,
-    "_risk_summary":{},"_trades":[],"_arb_opportunities":0}
+    "_risk_summary":{},"_trades":[],"_arb_opportunities":0,
+    # Polymarket additions
+    "poly_balance":0,"poly_enabled":False,
+    "_cross_arb_opportunities":0,"_quickflip_active":0,
+    "_cross_platform_risk":{}}
 SHARED_LOCK = threading.Lock()
 
 log=logging.getLogger("agent"); log.setLevel(logging.DEBUG)
@@ -213,22 +259,53 @@ class DataFetcher:
         self.cache[key] = (val, time.time())
         return val
 
-    def fetch_all(self):
-        """Run before each scan. Populates self.brief with latest data."""
+    # Which FRED series each market category needs
+    FRED_BY_CATEGORY = {
+        "fed_rates": ["fed_funds", "treasury_10y", "treasury_2y"],
+        "inflation": ["cpi", "core_cpi"],
+        "employment": ["unemployment", "nonfarm", "jobless_claims"],
+        "gdp_growth": ["fed_funds"],
+        "markets": ["treasury_10y", "treasury_2y"],
+        "energy": ["gas_price"],
+    }
+
+    def fetch_all(self, market_categories=None):
+        """Run before each scan. Populates self.brief with latest data.
+
+        market_categories: optional set of category strings from the current batch.
+            If provided, only fetches data relevant to those categories (saves HTTP calls).
+            If None, fetches everything (backwards compatible).
+        """
         self.brief = {}
         self.feed_status = {"nws": False, "fred": False}
-        # NWS -- no key needed
-        try:
-            self.brief["nws_forecasts"] = self._fetch_nws_batch()
-            if self.brief["nws_forecasts"]:
-                self.feed_status["nws"] = True
-        except Exception as e:
-            log.warning(f"NWS prefetch failed: {e}")
+
+        need_nws = market_categories is None or "weather" in market_categories
+        need_fred_cats = set()
+        if market_categories is None:
+            need_fred_cats = set(self.FRED_BY_CATEGORY.keys())
+        else:
+            need_fred_cats = market_categories & set(self.FRED_BY_CATEGORY.keys())
+
+        # NWS -- only if weather markets exist
+        if need_nws:
+            try:
+                self.brief["nws_forecasts"] = self._fetch_nws_batch()
+                if self.brief["nws_forecasts"]:
+                    self.feed_status["nws"] = True
+            except Exception as e:
+                log.warning(f"NWS prefetch failed: {e}")
+                self.brief["nws_forecasts"] = {}
+        else:
+            log.debug("Data prefetch: skipping NWS (no weather markets)")
             self.brief["nws_forecasts"] = {}
-        # FRED -- requires key
-        if self.fred_key:
+
+        # FRED -- only series needed by current market categories
+        if self.fred_key and need_fred_cats:
             fred_ok = 0
-            for key in ["fed_funds","cpi","core_cpi","unemployment","nonfarm","jobless_claims","gas_price","treasury_10y","treasury_2y"]:
+            needed_series = set()
+            for cat in need_fred_cats:
+                needed_series.update(self.FRED_BY_CATEGORY.get(cat, []))
+            for key in needed_series:
                 try:
                     self.brief[key] = self._fetch_fred(key)
                     if self.brief[key]: fred_ok += 1
@@ -237,11 +314,17 @@ class DataFetcher:
                     self.brief[key] = None
             if fred_ok > 0:
                 self.feed_status["fred"] = True
+            skipped = 9 - len(needed_series)
+            if skipped > 0:
+                log.debug(f"Data prefetch: skipped {skipped} irrelevant FRED series")
+        elif not need_fred_cats:
+            log.debug("Data prefetch: skipping FRED (no econ/finance markets)")
+
         data_count = sum(1 for v in self.brief.values() if v)
-        if data_count == 0:
+        if data_count == 0 and (need_nws or need_fred_cats):
             log.warning("Data prefetch: ZERO feeds loaded -- AI will rely on web search only")
-        else:
-            log.info(f"Data prefetch: {data_count} feeds loaded (NWS:{'OK' if self.feed_status['nws'] else 'FAIL'} FRED:{'OK' if self.feed_status['fred'] else 'FAIL'})")
+        elif data_count > 0:
+            log.info(f"Data prefetch: {data_count} feeds loaded (NWS:{'OK' if self.feed_status['nws'] else 'SKIP'} FRED:{'OK' if self.feed_status['fred'] else 'SKIP'})")
         return self.brief
 
     def _fetch_nws_batch(self):
@@ -871,35 +954,501 @@ class MarketCache:
         return self.markets
 
 # ════════════════════════════════════════
+# POLYMARKET API CLIENT
+# ════════════════════════════════════════
+GAMMA_API = "https://gamma-api.polymarket.com"
+CLOB_API = "https://clob.polymarket.com"
+
+class PolymarketAPI:
+    """Polymarket CLOB API client, mirroring KalshiAPI interface."""
+
+    def __init__(self):
+        self.private_key = CFG.get("polymarket_private_key", "")
+        self.client = None
+        self._address = ""
+
+        if not HAS_POLYMARKET:
+            log.warning("py-clob-client not installed -- Polymarket read-only mode")
+            return
+        if not HAS_ETH_ACCOUNT:
+            log.warning("eth-account not installed -- Polymarket read-only mode")
+            return
+        if not self.private_key:
+            log.info("Polymarket: no private key -- read-only mode (market data only)")
+            return
+
+        try:
+            acct = EthAccount.from_key(self.private_key)
+            self._address = acct.address
+            api_key = CFG.get("polymarket_api_key", "")
+            api_secret = CFG.get("polymarket_api_secret", "")
+            api_passphrase = CFG.get("polymarket_api_passphrase", "")
+            funder = CFG.get("polymarket_funder", "") or None
+            chain_id = POLYGON if HAS_POLYMARKET else 137
+
+            if api_key and api_secret and api_passphrase:
+                creds = {"apiKey": api_key, "secret": api_secret, "passphrase": api_passphrase}
+                self.client = ClobClient(CLOB_API, key=self.private_key, chain_id=chain_id,
+                                          creds=creds, funder=funder)
+            else:
+                self.client = ClobClient(CLOB_API, key=self.private_key, chain_id=chain_id,
+                                          funder=funder)
+                try:
+                    self.client.set_api_creds(self.client.create_or_derive_api_creds())
+                    log.info(f"Polymarket: derived API creds for {self._address[:10]}...")
+                except Exception as e:
+                    log.warning(f"Polymarket: failed to derive API creds: {e} -- read-only mode")
+                    self.client = None
+
+            if self.client:
+                log.info(f"Polymarket API: connected as {self._address[:10]}...")
+        except Exception as e:
+            log.error(f"Polymarket init failed: {e}")
+            self.client = None
+
+    @property
+    def is_trading_enabled(self):
+        return self.client is not None
+
+    def balance(self):
+        if not self.client: return 0.0
+        try:
+            bal = self.client.get_balance()
+            if isinstance(bal, dict): return float(bal.get("balance", 0)) / 1e6
+            return float(bal) / 1e6 if float(bal) > 100 else float(bal)
+        except Exception as e:
+            log.error(f"Polymarket balance error: {e}"); return 0.0
+
+    def all_markets(self, limit=500):
+        markets = []; offset = 0; page_size = 100
+        for _ in range(limit // page_size + 1):
+            try:
+                r = req_lib.get(f"{GAMMA_API}/markets",
+                    params={"closed":"false","limit":page_size,"offset":offset,
+                            "order":"volume24hr","ascending":"false"}, timeout=15)
+                if r.status_code != 200: break
+                batch = r.json()
+                if not batch: break
+                markets.extend(batch); offset += page_size
+                if len(batch) < page_size: break
+                time.sleep(0.2)
+            except Exception as e:
+                log.error(f"Polymarket market fetch error at offset {offset}: {e}"); break
+        return markets
+
+    def orderbook(self, token_id):
+        if self.client:
+            try:
+                ob = self.client.get_order_book(token_id)
+                return self._normalize_orderbook(ob)
+            except Exception as e:
+                log.debug(f"Polymarket CLOB orderbook error for {token_id}: {e}")
+        try:
+            r = req_lib.get(f"{CLOB_API}/book", params={"token_id": token_id}, timeout=10)
+            if r.status_code == 200: return self._normalize_orderbook(r.json())
+        except Exception as e:
+            log.debug(f"Polymarket REST orderbook error: {e}")
+        return {"orderbook": {"yes": [], "no": []}}
+
+    def _normalize_orderbook(self, raw_ob):
+        result = {"yes": [], "no": []}
+        try:
+            bids, asks = [], []
+            if hasattr(raw_ob, 'bids'):
+                bids = raw_ob.bids or []; asks = raw_ob.asks or []
+            elif isinstance(raw_ob, dict):
+                bids = raw_ob.get("bids", []); asks = raw_ob.get("asks", [])
+            for entry in asks:
+                price = float(entry.price if hasattr(entry, 'price') else entry.get("price", 0))
+                size = float(entry.size if hasattr(entry, 'size') else entry.get("size", 0))
+                cents = int(round(price * 100))
+                if 1 <= cents <= 99: result["yes"].append([cents, int(size)])
+            for entry in bids:
+                price = float(entry.price if hasattr(entry, 'price') else entry.get("price", 0))
+                size = float(entry.size if hasattr(entry, 'size') else entry.get("size", 0))
+                no_cents = int(round((1.0 - price) * 100))
+                if 1 <= no_cents <= 99: result["no"].append([no_cents, int(size)])
+            result["yes"].sort(key=lambda x: x[0])
+            result["no"].sort(key=lambda x: x[0])
+        except Exception as e:
+            log.debug(f"Orderbook normalize error: {e}")
+        return {"orderbook": result}
+
+    def place_order(self, token_id, side, count, price_cents):
+        if not self.client: raise RuntimeError("Polymarket trading not enabled")
+        price = price_cents / 100.0
+        try:
+            if side.lower() == "yes":
+                order_args = OrderArgs(price=price, size=count, side="BUY", token_id=token_id)
+            else:
+                order_args = OrderArgs(price=1.0-price, size=count, side="SELL", token_id=token_id)
+            signed = self.client.create_order(order_args)
+            result = self.client.post_order(signed, OrderType.GTC)
+            log.info(f"Polymarket order: {side} {count}x @{price_cents}c token={token_id[:16]}...")
+            return result
+        except Exception as e:
+            log.error(f"Polymarket order failed: {e}"); raise
+
+    def cancel_order(self, order_id):
+        if not self.client: return False
+        try: self.client.cancel(order_id); return True
+        except Exception as e: log.error(f"Polymarket cancel failed: {e}"); return False
+
+    def positions(self):
+        if not self.client: return []
+        try:
+            positions = self.client.get_positions()
+            if isinstance(positions, list): return positions
+            return positions.get("positions", []) if isinstance(positions, dict) else []
+        except Exception as e: log.error(f"Polymarket positions error: {e}"); return []
+
+
+def normalize_polymarket(pm):
+    """Convert Polymarket Gamma API market dict to internal format matching Kalshi markets."""
+    tokens = pm.get("tokens", [])
+    yes_token, no_token, yes_price, no_price = "", "", 50, 50
+    for tok in tokens:
+        outcome = (tok.get("outcome", "") or "").lower()
+        if outcome == "yes":
+            yes_token = tok.get("token_id", ""); yes_price = float(tok.get("price", 0.5)) * 100
+        elif outcome == "no":
+            no_token = tok.get("token_id", ""); no_price = float(tok.get("price", 0.5)) * 100
+    if not yes_token and len(tokens) >= 1:
+        yes_token = tokens[0].get("token_id", ""); yes_price = float(tokens[0].get("price", 0.5)) * 100
+    if not no_token and len(tokens) >= 2:
+        no_token = tokens[1].get("token_id", ""); no_price = float(tokens[1].get("price", 0.5)) * 100
+
+    end_date = pm.get("end_date_iso", pm.get("endDate", ""))
+    hrs_left = 9999
+    if end_date:
+        try:
+            ct = datetime.datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+            hrs_left = max(0, (ct - datetime.datetime.now(datetime.timezone.utc)).total_seconds() / 3600)
+        except Exception: pass
+
+    volume = 0
+    try: volume = int(float(pm.get("volume", pm.get("volume24hr", 0)) or 0))
+    except (ValueError, TypeError): pass
+
+    return {
+        "platform": "polymarket",
+        "ticker": pm.get("condition_id", pm.get("id", "")),
+        "token_id": yes_token,
+        "no_token_id": no_token,
+        "title": pm.get("question", pm.get("title", "")),
+        "subtitle": pm.get("description", "")[:200],
+        "category": "other",
+        "yes_bid": int(round(yes_price)),
+        "no_bid": int(round(no_price)),
+        "last_price": int(round(yes_price)),
+        "volume": volume,
+        "close_time": end_date,
+        "expiration_time": end_date,
+        "_hrs_left": round(hrs_left, 1),
+        "_score": 0,
+        "_category": "other",
+        "event_ticker": pm.get("market_slug", pm.get("slug", "")),
+    }
+
+
+class PolymarketCache:
+    """Cache for Polymarket markets, mirrors MarketCache."""
+    def __init__(self, api):
+        self.api = api; self.markets = []; self.last_refresh = 0
+        self.ttl = CFG.get("market_cache_minutes", 12) * 60
+    def get(self):
+        now = time.time()
+        if not self.markets or (now - self.last_refresh) > self.ttl:
+            log.info("Loading Polymarket markets...")
+            try:
+                raw = self.api.all_markets()
+                self.markets = [normalize_polymarket(m) for m in raw]
+                self.last_refresh = now
+                log.info(f"Cached {len(self.markets)} Polymarket markets")
+            except Exception as e:
+                log.error(f"Polymarket market refresh failed: {e}")
+                if not self.markets: return []
+        return self.markets
+
+
+# ════════════════════════════════════════
+# CROSS-PLATFORM MATCHING & ARBITRAGE
+# ════════════════════════════════════════
+
+def _jaccard_similarity(s1, s2):
+    w1 = set(s1.lower().split()); w2 = set(s2.lower().split())
+    if not w1 or not w2: return 0.0
+    return len(w1 & w2) / len(w1 | w2)
+
+def _levenshtein_similarity(s1, s2):
+    s1, s2 = s1.lower(), s2.lower()
+    if s1 == s2: return 1.0
+    max_len = max(len(s1), len(s2))
+    if max_len == 0: return 1.0
+    prev = list(range(len(s2) + 1)); curr = [0] * (len(s2) + 1)
+    for i in range(1, len(s1) + 1):
+        curr[0] = i
+        for j in range(1, len(s2) + 1):
+            cost = 0 if s1[i-1] == s2[j-1] else 1
+            curr[j] = min(curr[j-1]+1, prev[j]+1, prev[j-1]+cost)
+        prev, curr = curr, prev
+    return 1.0 - (prev[len(s2)] / max_len)
+
+def combined_similarity(title1, title2):
+    return 0.6 * _jaccard_similarity(title1, title2) + 0.4 * _levenshtein_similarity(title1, title2)
+
+def match_markets(kalshi_markets, poly_markets, threshold=0.70):
+    """Match markets across platforms using title similarity. Returns list of match dicts."""
+    matches = []; used_poly = set()
+    cache_path = "market-matches.json"
+    cached_matches = {}
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path) as f: cached_matches = json.load(f)
+            cutoff = time.time() - 7 * 86400
+            cached_matches = {k: v for k, v in cached_matches.items() if v.get("timestamp", 0) > cutoff}
+        except Exception: cached_matches = {}
+
+    for km in kalshi_markets:
+        k_title = km.get("title", ""); k_ticker = km.get("ticker", "")
+        k_category = km.get("_category", "other"); k_hrs = km.get("_hrs_left", 9999)
+        # Check cache
+        if k_ticker in cached_matches:
+            cached_poly_id = cached_matches[k_ticker].get("poly_ticker", "")
+            for i, pm in enumerate(poly_markets):
+                if i not in used_poly and pm.get("ticker", "") == cached_poly_id:
+                    matches.append({"kalshi": km, "polymarket": pm,
+                        "similarity": cached_matches[k_ticker].get("similarity", 0.90), "source": "cache"})
+                    used_poly.add(i); break
+            continue
+        best_match, best_score = None, 0
+        for i, pm in enumerate(poly_markets):
+            if i in used_poly: continue
+            p_category = pm.get("_category", "other"); p_hrs = pm.get("_hrs_left", 9999)
+            if k_category != "other" and p_category != "other" and k_category != p_category: continue
+            if abs(k_hrs - p_hrs) > 48 and k_hrs < 9999 and p_hrs < 9999: continue
+            score = combined_similarity(k_title, pm.get("title", ""))
+            if abs(k_hrs - p_hrs) < 6 and k_hrs < 9999: score = min(1.0, score + 0.05)
+            if score > best_score and score >= threshold:
+                best_score = score; best_match = (i, pm)
+        if best_match:
+            idx, pm = best_match
+            matches.append({"kalshi": km, "polymarket": pm, "similarity": round(best_score, 3), "source": "computed"})
+            used_poly.add(idx)
+            cached_matches[k_ticker] = {"poly_ticker": pm.get("ticker", ""), "similarity": round(best_score, 3),
+                "timestamp": time.time(), "k_title": k_title[:80], "p_title": pm.get("title", "")[:80]}
+    try:
+        with open(cache_path, "w") as f: json.dump(cached_matches, f, indent=2)
+    except Exception: pass
+    return matches
+
+def scan_cross_platform_arbitrage(matches, kalshi_api, poly_api, fee_kalshi=0.07, fee_poly=0.00):
+    """Scan matched market pairs for cross-platform arbitrage opportunities."""
+    opportunities = []
+    for match in matches:
+        km, pm = match["kalshi"], match["polymarket"]
+        if match.get("similarity", 0) < 0.80: continue
+        try:
+            k_ob = kalshi_api.orderbook(km["ticker"])
+            k_book = k_ob.get("orderbook", {})
+            yes_token = pm.get("token_id", "")
+            if not yes_token: continue
+            p_ob = poly_api.orderbook(yes_token)
+            p_book = p_ob.get("orderbook", {})
+            # Strategy 1: YES@Kalshi + NO@Polymarket
+            k_yes = k_book.get("yes", []); p_no = p_book.get("no", [])
+            profit_1, cost_1 = -999, 999
+            if k_yes and p_no:
+                k_yes_p = _best_ask(k_yes); p_no_p = _best_ask(p_no)
+                if k_yes_p and p_no_p:
+                    cost_1 = k_yes_p + p_no_p; profit_1 = 100 - cost_1 - (fee_kalshi + fee_poly) * 100
+            # Strategy 2: NO@Kalshi + YES@Polymarket
+            k_no = k_book.get("no", []); p_yes = p_book.get("yes", [])
+            profit_2, cost_2 = -999, 999
+            if k_no and p_yes:
+                k_no_p = _best_ask(k_no); p_yes_p = _best_ask(p_yes)
+                if k_no_p and p_yes_p:
+                    cost_2 = k_no_p + p_yes_p; profit_2 = 100 - cost_2 - (fee_kalshi + fee_poly) * 100
+            best = max(profit_1, profit_2)
+            if best > CFG.get("cross_arb_min_profit_cents", 2):
+                is_s1 = profit_1 >= profit_2
+                opportunities.append({
+                    "kalshi_ticker": km["ticker"], "poly_token": yes_token,
+                    "poly_no_token": pm.get("no_token_id", ""),
+                    "title": km.get("title", ""),
+                    "strategy": 1 if is_s1 else 2,
+                    "strategy_desc": "YES@Kalshi+NO@Poly" if is_s1 else "NO@Kalshi+YES@Poly",
+                    "profit_cents": round(best, 1),
+                    "cost_cents": round(cost_1 if is_s1 else cost_2, 1),
+                    "k_price": _best_ask(k_yes) if is_s1 else _best_ask(k_no),
+                    "p_price": _best_ask(p_no) if is_s1 else _best_ask(p_yes),
+                    "similarity": match.get("similarity", 0),
+                    "type": "cross_platform_arbitrage",
+                })
+            time.sleep(0.15)
+        except Exception as e:
+            log.debug(f"Cross-arb scan error for {km.get('ticker','?')}: {e}"); continue
+    opportunities.sort(key=lambda x: x["profit_cents"], reverse=True)
+    return opportunities
+
+def _best_ask(asks):
+    if not asks: return None
+    first = asks[0]
+    return int(first[0]) if isinstance(first, list) else int(first)
+
+def execute_cross_arb(kalshi_api, poly_api, opp, max_cost=10.0, dry_run=False):
+    """Execute both legs of a cross-platform arb. Returns result dict."""
+    cost_per_pair = opp["cost_cents"] / 100.0
+    contracts = min(int(max_cost / cost_per_pair) if cost_per_pair > 0 else 0, 20)
+    if contracts == 0: return {"success": False, "reason": "Zero contracts"}
+    total_cost = round(contracts * cost_per_pair, 2)
+    total_profit = round(contracts * opp["profit_cents"] / 100, 2)
+    if dry_run: return {"success": True, "dry_run": True, "contracts": contracts,
+        "total_cost": total_cost, "expected_profit": total_profit, "strategy": opp["strategy_desc"]}
+    # Leg 1: Kalshi (less liquid)
+    try:
+        side1 = "yes" if opp["strategy"] == 1 else "no"
+        kalshi_api.place_order(opp["kalshi_ticker"], side1, contracts, opp["k_price"])
+        log.info(f"  ARB Leg 1 (Kalshi): {side1} {contracts}x @{opp['k_price']}c")
+    except Exception as e:
+        log.error(f"  ARB Leg 1 FAILED: {e}"); return {"success": False, "reason": f"Leg 1 failed: {e}"}
+    time.sleep(1)
+    # Leg 2: Polymarket
+    try:
+        if opp["strategy"] == 1:
+            token = opp.get("poly_no_token", opp["poly_token"])
+            poly_api.place_order(token, "no", contracts, opp["p_price"])
+        else:
+            poly_api.place_order(opp["poly_token"], "yes", contracts, opp["p_price"])
+        log.info(f"  ARB Leg 2 (Polymarket): {contracts}x @{opp['p_price']}c")
+    except Exception as e:
+        log.error(f"  ARB Leg 2 FAILED: {e} -- Leg 1 NAKED!!")
+        return {"success": False, "reason": f"Leg 2 failed: {e}", "leg1_filled": True, "naked_position": True}
+    return {"success": True, "contracts": contracts, "total_cost": total_cost,
+        "expected_profit": total_profit, "strategy": opp["strategy_desc"]}
+
+
+# ════════════════════════════════════════
+# BEST-PRICE ROUTING
+# ════════════════════════════════════════
+def route_order(side, kalshi_price, poly_price, kalshi_fee=0.07, poly_fee=0.00):
+    """Route to the platform with the best effective price."""
+    k_eff = kalshi_price + kalshi_fee * 100; p_eff = poly_price + poly_fee * 100
+    return ("kalshi", kalshi_price) if k_eff <= p_eff else ("polymarket", poly_price)
+
+def get_best_price(ticker, kalshi_api, poly_match, poly_api, side, kalshi_fee=0.07, poly_fee=0.00):
+    """Get the best price across both platforms for a given side."""
+    k_price, k_ob, p_price, p_ob = None, None, None, None
+    try:
+        k_ob = kalshi_api.orderbook(ticker)
+        asks = k_ob.get("orderbook", {}).get("yes" if side == "yes" else "no", [])
+        if asks: k_price = _best_ask(asks)
+    except Exception: pass
+    if poly_match and poly_api:
+        token_id = poly_match.get("token_id", "")
+        if token_id:
+            try:
+                p_ob = poly_api.orderbook(token_id)
+                asks = p_ob.get("orderbook", {}).get("yes" if side == "yes" else "no", [])
+                if asks: p_price = _best_ask(asks)
+            except Exception: pass
+    if k_price is not None and p_price is not None:
+        platform, price = route_order(side, k_price, p_price, kalshi_fee, poly_fee)
+        return platform, price, k_ob if platform == "kalshi" else p_ob
+    if k_price is not None: return "kalshi", k_price, k_ob
+    if p_price is not None: return "polymarket", p_price, p_ob
+    return None, None, None
+
+
+# ════════════════════════════════════════
+# QUICK-FLIP SCALPING
+# ════════════════════════════════════════
+def find_quickflip_candidates(markets, min_price=3, max_price=15, min_volume=50):
+    """Find cheap contracts (3-15c) for quick-flip scalping."""
+    candidates = []
+    for m in markets:
+        yc = m.get("yes_bid", m.get("last_price", 50)) or 50
+        vol = m.get("volume", 0) or 0; hrs = m.get("_hrs_left", 9999)
+        if min_price <= yc <= max_price and vol >= min_volume and hrs > 2:
+            candidates.append({"market": m, "side": "yes", "entry_price": yc,
+                "target_price": min(yc * 2, 50), "stop_price": max(1, yc - 2),
+                "potential_roi": round((min(yc * 2, 50) - yc) / yc * 100, 0),
+                "platform": m.get("platform", "kalshi"), "hours_left": hrs})
+        no_price = 100 - yc
+        if min_price <= no_price <= max_price and vol >= min_volume and hrs > 2:
+            candidates.append({"market": m, "side": "no", "entry_price": no_price,
+                "target_price": min(no_price * 2, 50), "stop_price": max(1, no_price - 2),
+                "potential_roi": round((min(no_price * 2, 50) - no_price) / no_price * 100, 0),
+                "platform": m.get("platform", "kalshi"), "hours_left": hrs})
+    candidates.sort(key=lambda x: x["potential_roi"], reverse=True)
+    return candidates[:10]
+
+
+# ════════════════════════════════════════
+# COMPOUNDING BANKROLL TIERS
+# ════════════════════════════════════════
+BANKROLL_TIERS = [
+    (500, 60.0, 200.0, 0.20), (300, 40.0, 150.0, 0.25),
+    (150, 25.0, 100.0, 0.25), (75, 15.0, 60.0, 0.30), (0, 8.0, 35.0, 0.30),
+]
+
+def get_bankroll_tier(bankroll):
+    """Get dynamic trading parameters based on current combined bankroll."""
+    for min_br, max_bet, max_exp, kf in BANKROLL_TIERS:
+        if bankroll >= min_br:
+            return {"max_bet_per_trade": max_bet, "max_total_exposure": max_exp,
+                    "kelly_fraction": kf, "tier_min": min_br}
+    return {"max_bet_per_trade": 5.0, "max_total_exposure": 25.0, "kelly_fraction": 0.20, "tier_min": 0}
+
+def get_dynamic_kelly(base_fraction, win_streak=0, loss_cooldown=0):
+    """Adjust Kelly fraction based on recent performance."""
+    if loss_cooldown > 0: return max(0.10, base_fraction * 0.5)
+    if win_streak >= 2: return min(0.50, base_fraction + (win_streak - 1) * 0.05)
+    return base_fraction
+
+
+# ════════════════════════════════════════
 # WITHIN-MARKET ARBITRAGE SCANNER
 # (No AI needed -- pure math)
 # ════════════════════════════════════════
-def scan_arbitrage(api, markets):
+def scan_arbitrage(api, markets, ob_cache=None):
     """
     Check for markets where YES+NO orderbook best bids sum to < 100.
     Buying YES and NO guarantees $1 payout for less than $1 cost = riskless profit.
     This is the only TRUE arbitrage -- everything else is probabilistic.
+
+    ob_cache: optional dict of ticker -> (timestamp, yes_price, no_price) to skip
+              markets whose orderbook prices haven't changed since last scan.
     """
     opportunities = []
+    skipped = 0
     # Sample markets with decent volume
     candidates = [m for m in markets if (m.get("volume",0) or 0) >= 50][:100]
     for m in candidates:
         try:
             ob = api.orderbook(m["ticker"])
             book = ob.get("orderbook",{})
-            # Get best YES and NO ask prices (what we'd pay)
-            # In Kalshi's binary market: YES bid at X means you can buy YES at X
-            # NO bid at Y means you can buy NO at Y
-            # If X + Y < 100 cents, buying both = guaranteed profit
             yes_bids = book.get("yes", book.get("yes_dollars",[]))
             no_bids = book.get("no", book.get("no_dollars",[]))
             if not yes_bids or not no_bids: continue
-            # Best (highest) bid = cheapest entry for each side
             raw_yes = yes_bids[0][0] if isinstance(yes_bids[0],list) else yes_bids[0]
             raw_no = no_bids[0][0] if isinstance(no_bids[0],list) else no_bids[0]
             best_yes = parse_orderbook_price(raw_yes)
             best_no = parse_orderbook_price(raw_no)
             if best_yes is None or best_no is None: continue
+
+            # Skip if prices unchanged since last scan (saves processing time)
+            if ob_cache is not None:
+                tk = m["ticker"]
+                cached = ob_cache.get(tk)
+                now = time.time()
+                if cached:
+                    ts, old_yes, old_no = cached
+                    if now - ts < 180 and old_yes == best_yes and old_no == best_no:
+                        skipped += 1
+                        continue  # Prices unchanged, skip
+                ob_cache[tk] = (now, best_yes, best_no)
+
             total_cost = best_yes + best_no
             fee_cost = CFG["taker_fee_per_contract"] * 2 * 100  # 2 contracts, convert to cents
             if total_cost + fee_cost < 100:
@@ -913,6 +1462,7 @@ def scan_arbitrage(api, markets):
         except Exception:
             continue
         time.sleep(0.1)  # Rate limit
+    if skipped: log.debug(f"  Arb scan: skipped {skipped} unchanged orderbooks")
     opportunities.sort(key=lambda x: x["profit_cents"], reverse=True)
     return opportunities
 
@@ -940,23 +1490,26 @@ class DebateEngine:
         if e < self._gap: time.sleep(self._gap - e)
         self._last = time.time()
 
-    def _call(self, prompt, max_tok=1200, retries=2):
+    def _call(self, prompt, max_tok=1200, retries=2, use_search=True):
+        """Call Claude API. Set use_search=False for synthesis/analysis-only calls (saves tokens)."""
         self._throttle()
+        tools = [{"type":"web_search_20250305","name":"web_search"}] if use_search else []
         for attempt in range(retries):
             try:
                 if HAS_SDK:
-                    resp = self.client.messages.create(
-                        model="claude-sonnet-4-20250514", max_tokens=max_tok,
-                        tools=[{"type":"web_search_20250305","name":"web_search"}],
+                    kwargs = dict(model="claude-sonnet-4-20250514", max_tokens=max_tok,
                         messages=[{"role":"user","content":prompt}])
+                    if tools: kwargs["tools"] = tools
+                    resp = self.client.messages.create(**kwargs)
                     return "\n".join(b.text for b in resp.content if hasattr(b,"text"))
                 else:
+                    body = {"model":"claude-sonnet-4-20250514","max_tokens":max_tok,
+                            "messages":[{"role":"user","content":prompt}]}
+                    if tools: body["tools"] = tools
                     r = req_lib.post("https://api.anthropic.com/v1/messages",
                         headers={"Content-Type":"application/json","x-api-key":self.api_key,
                                  "anthropic-version":"2023-06-01"},
-                        json={"model":"claude-sonnet-4-20250514","max_tokens":max_tok,
-                              "tools":[{"type":"web_search_20250305","name":"web_search"}],
-                              "messages":[{"role":"user","content":prompt}]}, timeout=120)
+                        json=body, timeout=120)
                     if r.status_code == 429:
                         w = 60*(attempt+1); log.warning(f"Rate limit, wait {w}s"); time.sleep(w); continue
                     r.raise_for_status()
@@ -990,59 +1543,20 @@ LIVE DATA (pre-fetched from official sources -- use these as ground truth):
 {data_brief}
 
 IMPORTANT: Compare the live data above DIRECTLY to the market prices. If NWS says 62°F and a market asks "above 58°F?" priced at 50c, that's concrete evidence of a 10%+ edge. If FRED shows Fed Funds at 5.33% and a market implies otherwise, that's edge."""
-        if not lines: return []
-        mlist = "\n".join(lines[:CFG["markets_per_scan"]])
 
-        prompt = f"""You are an AGGRESSIVE prediction market trader. Your job is to FIND EDGE AND EXPLOIT IT. You are hungry for trades. The market is often wrong and slow to react. Be bold.
+        prompt = f"""You are an aggressive prediction market trader. Find edge and exploit it. Markets are slow to react. Be bold. A 3-5%% edge IS worth trading.
 
 TODAY: {datetime.datetime.now().strftime("%A, %B %d, %Y %I:%M %p")}
 
-TASK: From these markets, identify up to 5 tradeable opportunities. Look for ANY edge -- not just massive ones. A 3-5%% edge IS worth trading.
-
-AGGRESSIVE PLAYBOOK -- think like a shark:
-
-1. STALE PRICES: Markets often lag behind breaking news by hours. Search for the LATEST news on each topic. If reality has changed but the price hasn't, ATTACK.
-
-2. WEATHER EXPLOITS: NWS forecasts update every few hours. If NWS says 72F and a market prices "above 65F" at only 70c, that's free money. Check forecasts for ALL weather markets.
-
-3. NEAR-EXPIRY PICKS: Markets closing in <6h with prices between 15-85c are goldmines. Reality is usually clearer than the market thinks near expiry. If you can determine the likely outcome, BET.
-
-4. CONSENSUS VS PRICE: When polls, forecasts, or expert consensus clearly disagree with the market price by even 5%%, that's tradeable edge.
-
-5. ASYMMETRIC BETS: A contract at 10c that should be 20c is a 100%% ROI. Look for cheap contracts where the true probability is even slightly higher.
-
-6. DATA ALREADY RELEASED: If a jobs report, CPI print, or court ruling already happened today but the market hasn't moved, that's instant edge.
-
-7. MOMENTUM PLAYS: If a price has been trending in one direction and the underlying fundamentals support it continuing, ride the wave.
-
-RESEARCH CHECKLIST:
-- WEATHER: Search NWS forecasts for each city mentioned. Compare temp/precip to market thresholds.
-- ECONOMICS: Search latest data releases (BLS, FRED, Fed speakers). Compare to market prices.
-- POLITICS: Search latest news on the specific topic. Has something happened that markets missed?
-- CRYPTO/STOCKS: Search current prices. Is the market stale vs current reality?
-- EVENTS: Search for latest updates on sports, awards, trials, launches, etc.
-
-RULES:
-- Return up to 5 candidates (more is better -- be aggressive)
-- Even a 3%% edge is worth flagging
-- Search for CURRENT data, not yesterday's
-- Be concrete: cite the specific number or fact you found
-- You are TRYING to find trades. An empty list means you failed.
+FIND EDGE BY: Searching for CURRENT data (NWS forecasts, prices, news, data releases) and comparing to market prices. Stale prices after news = free money. Near-expiry (<6h) markets with clear outcomes = goldmines. Cheap contracts (10-20c) where true prob is higher = asymmetric bets.
 
 MARKETS:
 {mlist}
 {data_section}
 
-CRITICAL RULES FOR YOUR RESPONSE:
-- Each entry MUST have the EXACT ticker from the market list above (e.g. "KXTEMP-25MAR11-PHI-T50-B60")
-- Do NOT group multiple markets into one entry
-- Do NOT use descriptions like "Multiple weather markets" as tickers
-- One JSON object per individual market
-- The ticker field must EXACTLY match a ticker shown in the MARKETS section above
-
-Return ONLY a JSON array:
-[{{{{"ticker":"KXTEMP-25MAR11-PHI-T50-B60","title":"Philadelphia temp above 60F","category":"weather","market_yes_cents":65,"initial_edge_estimate":8,"side":"YES","evidence":"NWS forecast 72F, market implies only 65%% chance of >65F","is_cant_miss":false}}}}]
-Return [] ONLY if you truly cannot find ANY edge after thorough research."""
+Return up to 5 candidates as a JSON array. Use EXACT tickers from above. One JSON object per market.
+[{{{{"ticker":"EXACT-TICKER-HERE","title":"short desc","category":"weather","market_yes_cents":65,"initial_edge_estimate":8,"side":"YES","evidence":"specific fact vs market price","is_cant_miss":false}}}}]
+Return [] ONLY if no edge found after research."""
 
         for attempt in range(2):
             try:
@@ -1216,10 +1730,10 @@ RISK_FACTORS: [what could go wrong for YES holders in the next 24h]"""
 {market_context}
 
 BULL CASE (prob={bull_prob}%, floor={bull_floor}%):
-{bull_text[:500]}
+{bull_text[:700]}
 
 BEAR CASE (prob={bear_prob}%, ceiling={bear_ceiling}%):
-{bear_text[:500]}
+{bear_text[:700]}
 
 DEBATE METRICS:
 - Bull estimate: {bull_prob}% | Bear estimate: {bear_prob}%
@@ -1247,7 +1761,7 @@ PRICE_CENTS: [integer 1-99, your bid price]
 CONTRACTS: [integer 1-20]"""
 
         log.debug(f"SYNTHESIS prompt ({len(synthesis_prompt)} chars): {synthesis_prompt[:300]}...")
-        synth_text = self._call(synthesis_prompt, 800)
+        synth_text = self._call(synthesis_prompt, 800, use_search=False)  # No web search needed for synthesis
         log.debug(f"SYNTHESIS response: {synth_text[:500]}")
         result = self._parse_synthesis(synth_text, yc, bull_prob, bear_prob)
         result["bull_prob"] = bull_prob
@@ -1448,12 +1962,12 @@ class RiskMgr:
         if abs(edge)<CFG["min_edge_pct"]: return False,f"Low edge ({edge}%)"
         if self.day_pnl<-CFG["max_daily_loss"]: self.paused=True; return False,"CIRCUIT BREAKER"
         return True,"OK"
-    def record(self,ticker,title,side,contracts,price_c,conf,edge,evidence,bull_prob=0,bear_prob=0,probability=0):
+    def record(self,ticker,title,side,contracts,price_c,conf,edge,evidence,bull_prob=0,bear_prob=0,probability=0,platform="kalshi"):
         cost=contracts*price_c/100
         t={"time":datetime.datetime.now().isoformat(),"ticker":ticker,"title":title,"side":side,
            "contracts":contracts,"price_cents":price_c,"cost":round(cost,2),"confidence":conf,
            "probability":probability,"edge":edge,"evidence":evidence,
-           "bull_prob":bull_prob,"bear_prob":bear_prob,"status":"open"}
+           "bull_prob":bull_prob,"bear_prob":bear_prob,"status":"open","platform":platform}
         self.trades.append(t); self.day_trades+=1; self.exposure+=cost
         self.traded_tickers.add(ticker); self._save()
         # Calibration record
@@ -1483,7 +1997,7 @@ class RiskMgr:
 # ════════════════════════════════════════
 # DASHBOARD HTML
 # ════════════════════════════════════════
-DASHBOARD_HTML="""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Kalshi Agent v5</title>
+DASHBOARD_HTML="""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Kalshi Agent v6</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Instrument+Sans:wght@400;600;700&display=swap');
@@ -1528,7 +2042,7 @@ tr:hover td{background:#0f1520}
 .debate-tag.bear{background:rgba(248,113,113,.15);color:#f87171}
 </style></head><body>
 <div class="hdr">
-<div><h1 style="display:inline">Kalshi AI Agent</h1><span class="v">v5 -- Debate Protocol</span></div>
+<div><h1 style="display:inline">Kalshi AI Agent</h1><span class="v">v6 -- Cross-Platform Arbitrage</span></div>
 <div class="rt"><span class="env" id="env">--</span><span class="bal" id="bal">$0.00</span>
 <div class="tw"><span class="tl" id="tL">ON</span><button class="tb on" id="tB" onclick="toggle()"></button></div></div></div>
 <div class="main">
@@ -1536,16 +2050,20 @@ tr:hover td{background:#0f1520}
 <div id="pB" class="paused" style="display:none">PAUSED -- daily loss limit</div>
 <div class="cards">
 <div class="card"><div class="cl">Status</div><div class="cv gold" id="cS">--</div></div>
+<div class="card"><div class="cl">Kalshi</div><div class="cv green" id="cBK">$0</div></div>
+<div class="card"><div class="cl">Polymarket</div><div class="cv green" id="cBP">$0</div></div>
+<div class="card"><div class="cl">Combined</div><div class="cv green" id="cBC">$0</div></div>
 <div class="card"><div class="cl">Scans</div><div class="cv blue" id="cSc">0</div></div>
-<div class="card"><div class="cl">Trades Today</div><div class="cv white" id="cD">0/8</div></div>
+<div class="card"><div class="cl">Trades Today</div><div class="cv white" id="cD">0/15</div></div>
 <div class="card"><div class="cl">Exposure</div><div class="cv white" id="cE">$0</div></div>
 <div class="card"><div class="cl">Today P&L</div><div class="cv" id="cP">$0</div></div>
 <div class="card"><div class="cl">Lifetime</div><div class="cv white" id="cL">0</div></div>
 <div class="card"><div class="cl">Win Rate</div><div class="cv green" id="cW">--</div></div>
 <div class="card"><div class="cl">Arb Opps</div><div class="cv gold" id="cA">0</div></div>
+<div class="card"><div class="cl">Cross-Arb</div><div class="cv gold" id="cCA">0</div></div>
 </div>
-<div class="sect"><h2>Trade History (Bull/Bear Debate)</h2>
-<table><thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Qty</th><th>Price</th><th>Cost</th><th>Edge</th><th>Conf</th><th>Bull/Bear</th><th>Evidence</th></tr></thead>
+<div class="sect"><h2>Trade History (Cross-Platform)</h2>
+<table><thead><tr><th>Time</th><th>Plat</th><th>Market</th><th>Side</th><th>Qty</th><th>Price</th><th>Cost</th><th>Edge</th><th>Conf</th><th>Bull/Bear</th><th>Evidence</th></tr></thead>
 <tbody id="tbl"><tr><td colspan="10" style="text-align:center;color:#556a85;padding:20px">No trades yet</td></tr></tbody></table></div>
 <div class="sect"><h2>Activity Log</h2><div class="lb" id="lB"></div></div>
 <div class="ft" id="ft">--</div></div>
@@ -1553,7 +2071,11 @@ tr:hover td{background:#0f1520}
 async function poll(){try{
 const r=await fetch('/api/state');const d=await r.json();
 const e=document.getElementById('env');e.textContent=d.environment;e.className='env '+d.environment;
-document.getElementById('bal').textContent='$'+d.balance.toFixed(2);
+const combined=(d.balance+(d.poly_balance||0));
+document.getElementById('bal').textContent='$'+combined.toFixed(2);
+document.getElementById('cBK').textContent='$'+d.balance.toFixed(2);
+document.getElementById('cBP').textContent='$'+(d.poly_balance||0).toFixed(2);
+document.getElementById('cBC').textContent='$'+combined.toFixed(2);
 document.getElementById('cS').textContent=d.status;
 document.getElementById('cSc').textContent=d.scan_count;
 document.getElementById('cD').textContent=d.risk.day_trades+'/'+d.max_daily;
@@ -1562,16 +2084,20 @@ document.getElementById('cP').textContent=d.risk.day_pnl;
 document.getElementById('cL').textContent=d.risk.total;
 document.getElementById('cW').textContent=d.risk.win_rate;
 document.getElementById('cA').textContent=d.arb_opps;
+document.getElementById('cCA').textContent=d.cross_arb_opps||0;
 const b=document.getElementById('tB'),l=document.getElementById('tL');
 b.className='tb '+(d.enabled?'on':'off');l.textContent=d.enabled?'ON':'OFF';
 document.getElementById('pB').style.display=d.risk.paused?'block':'none';
 document.getElementById('dB').style.display=d.dry_run?'block':'none';
-document.getElementById('ft').textContent='Last: '+d.last_scan+' | Next: '+d.next_scan+' | Every '+d.scan_interval+'m | Debate protocol active';
+const polyTag=d.poly_enabled?' | Polymarket: ON':'';
+document.getElementById('ft').textContent='Last: '+d.last_scan+' | Next: '+d.next_scan+' | Arb: '+d.scan_interval+'m | AI: '+(d.ai_interval||15)+'m | v6 Cross-Platform'+polyTag;
 const tb=document.getElementById('tbl');
 if(d.trades&&d.trades.length){tb.innerHTML=d.trades.slice().reverse().slice(0,20).map(t=>{
 const sc=t.side==='yes'?'yes':'no';
 const bp=t.bull_prob||'?'; const brp=t.bear_prob||'?';
-return '<tr><td>'+t.time.slice(5,16)+'</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;font-family:Instrument Sans,sans-serif;font-size:11px">'+(t.title||t.ticker).slice(0,40)+'</td><td class="'+sc+'">'+t.side.toUpperCase()+'</td><td>'+t.contracts+'</td><td>'+t.price_cents+'c</td><td>$'+t.cost.toFixed(2)+'</td><td>'+t.edge+'%</td><td>'+t.confidence+'%</td><td><span class="debate-tag bull">B:'+bp+'%</span><span class="debate-tag bear">R:'+brp+'%</span></td><td style="font-family:Instrument Sans;font-size:10px;color:#8a9bb5;max-width:180px;overflow:hidden;text-overflow:ellipsis">'+(t.evidence||'').slice(0,50)+'</td></tr>';}).join('');}
+const plat=(t.platform||'kalshi').slice(0,1).toUpperCase();
+const platColor=plat==='P'?'#a78bfa':plat==='C'?'#e8b94a':'#60a5fa';
+return '<tr><td>'+t.time.slice(5,16)+'</td><td style="color:'+platColor+';font-weight:600">'+plat+'</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;font-family:Instrument Sans,sans-serif;font-size:11px">'+(t.title||t.ticker).slice(0,35)+'</td><td class="'+sc+'">'+t.side.toUpperCase()+'</td><td>'+t.contracts+'</td><td>'+t.price_cents+'c</td><td>$'+t.cost.toFixed(2)+'</td><td>'+t.edge+'%</td><td>'+t.confidence+'%</td><td><span class="debate-tag bull">B:'+bp+'%</span><span class="debate-tag bear">R:'+brp+'%</span></td><td style="font-family:Instrument Sans;font-size:10px;color:#8a9bb5;max-width:160px;overflow:hidden;text-overflow:ellipsis">'+(t.evidence||'').slice(0,45)+'</td></tr>';}).join('');}
 const lb=document.getElementById('lB');
 lb.innerHTML=d.log.slice().reverse().slice(0,100).map(l=>'<div class="ll"><span class="lt">'+l.time+'</span><span class="lm '+l.level+'">'+l.msg+'</span></div>').join('');
 }catch(e){}}
@@ -1601,10 +2127,15 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
     def _state(self):
         risk=SHARED.get("_risk_summary",{"total":0,"wins":0,"losses":0,"win_rate":"--","wagered":"$0","day_trades":0,"day_pnl":"$0","exposure":"$0","paused":False})
         return {"enabled":SHARED["enabled"],"status":SHARED["status"],"balance":SHARED["balance"],
+            "poly_balance":SHARED.get("poly_balance",0),"poly_enabled":SHARED.get("poly_enabled",False),
             "environment":CFG["environment"].upper(),"risk":risk,"trades":SHARED.get("_trades",[])[-20:],
             "log":SHARED["log_lines"][-100:],"last_scan":SHARED["last_scan"],"next_scan":SHARED["next_scan"],
             "dry_run":SHARED["dry_run"],"max_daily":CFG["max_daily_trades"],"scan_count":SHARED["scan_count"],
-            "scan_interval":CFG["scan_interval_minutes"],"arb_opps":SHARED["_arb_opportunities"]}
+            "scan_interval":CFG["scan_interval_minutes"],
+            "ai_interval":CFG["scan_interval_minutes"]*CFG.get("ai_scan_interval_multiplier",5),
+            "arb_opps":SHARED["_arb_opportunities"],
+            "cross_arb_opps":SHARED.get("_cross_arb_opportunities",0),
+            "quickflip_active":SHARED.get("_quickflip_active",0)}
     def log_message(self,*a): pass
 
 def start_dashboard():
@@ -1626,15 +2157,63 @@ class Agent:
         self.exit_mgr=ExitManager(self.api, self.risk, self.notifier)
         self.reporter=PerformanceReporter(self.risk, self.notifier)
         self.stop_event=threading.Event()
+        # Polymarket integration
+        self.poly_enabled = CFG.get("polymarket_enabled", False)
+        self.poly_api = None; self.poly_cache = None
+        self.cross_platform_matches = []
+        self.win_streak = 0; self.loss_cooldown = 0
+        self._scan_number = 0  # Tracks scans for AI phase scheduling
+        self._last_orderbook_cache = {}  # ticker -> (timestamp, yes_price, no_price)
+        if self.poly_enabled:
+            try:
+                self.poly_api = PolymarketAPI()
+                self.poly_cache = PolymarketCache(self.poly_api)
+                SHARED["poly_enabled"] = True
+                log.info(f"Polymarket: {'TRADING' if self.poly_api.is_trading_enabled else 'READ-ONLY'} mode")
+            except Exception as e:
+                log.error(f"Polymarket init failed: {e} -- running Kalshi-only")
+                self.poly_enabled = False
+
+    def _is_ai_scan_due(self):
+        """AI debate runs every N scans to save Claude credits. Arb phases run every scan."""
+        mult = CFG.get("ai_scan_interval_multiplier", 5)
+        return self._scan_number % mult == 0
 
     def scan(self):
         if not SHARED["enabled"]:
             SHARED["status"]="Disabled"; return
+        self._scan_number += 1
+        ai_due = self._is_ai_scan_due()
+        scan_type = "FULL (arb + AI)" if ai_due else "FAST (arb only)"
         SHARED["status"]="Scanning..."
-        log.info("="*50); log.info("SCAN START")
+        log.info("="*50); log.info(f"SCAN #{self._scan_number} ({scan_type})")
 
-        bal=self.api.balance(); SHARED["balance"]=bal; log.info(f"Balance: ${bal:.2f}")
-        if bal<1: SHARED["status"]="Low balance"; return
+        # ── BALANCE CHECK (both platforms) ──
+        bal=self.api.balance(); SHARED["balance"]=bal
+        poly_bal = 0.0
+        if self.poly_enabled and self.poly_api:
+            try: poly_bal = self.poly_api.balance()
+            except Exception as e: log.debug(f"Polymarket balance error: {e}")
+            SHARED["poly_balance"] = poly_bal
+        combined_bal = bal + poly_bal
+        log.info(f"Balance: Kalshi ${bal:.2f} | Polymarket ${poly_bal:.2f} | Combined ${combined_bal:.2f}")
+        if combined_bal < 1: SHARED["status"]="Low balance"; return
+
+        # ── COMPOUNDING: adjust parameters based on combined bankroll ──
+        if CFG.get("compounding_enabled", True):
+            tier = get_bankroll_tier(combined_bal)
+            kf = get_dynamic_kelly(tier["kelly_fraction"], self.win_streak, self.loss_cooldown)
+            # Only upgrade, never downgrade from config
+            if tier["max_bet_per_trade"] > CFG["max_bet_per_trade"]:
+                log.info(f"Bankroll tier upgrade: max_bet ${CFG['max_bet_per_trade']:.0f} -> ${tier['max_bet_per_trade']:.0f}")
+            active_max_bet = max(CFG["max_bet_per_trade"], tier["max_bet_per_trade"])
+            active_max_exposure = max(CFG["max_total_exposure"], tier["max_total_exposure"])
+            active_kelly = kf
+        else:
+            active_max_bet = CFG["max_bet_per_trade"]
+            active_max_exposure = CFG["max_total_exposure"]
+            active_kelly = CFG["kelly_fraction"]
+
         self.risk.new_day()
         self._cb_notified = False if not self.risk.paused else getattr(self, '_cb_notified', False)
         with SHARED_LOCK:
@@ -1646,21 +2225,106 @@ class Agent:
                 self._cb_notified = True
             return
 
+        # ── LOAD MARKETS (both platforms) ──
         mkts=self.cache.get()
+        poly_mkts = []
+        if self.poly_enabled and self.poly_cache:
+            try:
+                poly_mkts = self.poly_cache.get()
+                log.info(f"Polymarket: {len(poly_mkts)} markets loaded")
+            except Exception as e:
+                log.error(f"Polymarket market load failed: {e}")
 
-        # ── PRE-FETCH LIVE DATA (NWS + FRED) ──
+        # Tag Kalshi markets with platform
+        for m in mkts:
+            if "platform" not in m: m["platform"] = "kalshi"
+
+        # ── PRE-FETCH LIVE DATA (only what's needed for current markets) ──
         SHARED["status"]="Fetching live data..."
-        self.data.fetch_all()  # Handles its own errors per-feed now
+        # Quick category scan to determine which data feeds to fetch
+        cat_rules = CFG.get("category_rules", {})
+        active_categories = set()
+        for m in mkts:
+            text = " ".join(str(m.get(k,"")) for k in ["title","ticker","category","subtitle"]).lower()
+            for cat_name, cat_kws in cat_rules.items():
+                if any(kw in text for kw in cat_kws):
+                    active_categories.add(cat_name)
+                    break
+        if active_categories:
+            log.info(f"Active market categories: {', '.join(sorted(active_categories))}")
+        self.data.fetch_all(market_categories=active_categories if active_categories else None)
 
-        # ── PHASE 1: ARBITRAGE SCAN (no AI, pure math) ──
-        log.info("Checking arbitrage opportunities...")
-        arb_opps = scan_arbitrage(self.api, mkts)
-        SHARED["_arb_opportunities"] = len(arb_opps)
+        # ══════════════════════════════════════
+        # PHASE 1: CROSS-PLATFORM ARBITRAGE (fastest, no AI)
+        # ══════════════════════════════════════
+        if self.poly_enabled and poly_mkts and self.poly_api and CFG.get("cross_arb_enabled", True):
+            SHARED["status"]="Cross-platform arbitrage scan..."
+            log.info("Phase 1: Cross-platform arbitrage scan...")
+            try:
+                # Categorize Polymarket markets for matching
+                kws = CFG["target_keywords"]; cat_rules = CFG.get("category_rules", {})
+                for pm in poly_mkts:
+                    text = " ".join(str(pm.get(k, "")) for k in ["title", "subtitle", "event_ticker"]).lower()
+                    pm["_category"] = "other"
+                    best_cat_score = 0
+                    for cat_name, cat_kws in cat_rules.items():
+                        hits = sum(1 for kw in cat_kws if kw in text)
+                        if hits > best_cat_score: best_cat_score = hits; pm["_category"] = cat_name
+
+                # Match markets across platforms
+                threshold = CFG.get("cross_arb_match_threshold", 0.70)
+                self.cross_platform_matches = match_markets(mkts, poly_mkts, threshold)
+                log.info(f"  Cross-platform matches: {len(self.cross_platform_matches)}")
+                for match in self.cross_platform_matches[:5]:
+                    log.info(f"    {match['kalshi'].get('title','')[:35]} <-> {match['polymarket'].get('title','')[:35]} (sim:{match['similarity']:.2f})")
+
+                # Scan for arbitrage
+                cross_arbs = scan_cross_platform_arbitrage(
+                    self.cross_platform_matches, self.api, self.poly_api,
+                    fee_kalshi=CFG["taker_fee_per_contract"],
+                    fee_poly=CFG.get("polymarket_fee_per_contract", 0.00))
+                SHARED["_cross_arb_opportunities"] = len(cross_arbs)
+
+                if cross_arbs:
+                    for ca in cross_arbs[:3]:
+                        log.info(f"  CROSS-ARB: {ca['title'][:40]} -- {ca['strategy_desc']} -- profit: {ca['profit_cents']:.1f}c")
+                        if not self.dry:
+                            try:
+                                result = execute_cross_arb(self.api, self.poly_api, ca,
+                                    max_cost=CFG.get("cross_arb_max_cost", 10.0), dry_run=False)
+                                if result["success"]:
+                                    log.info(f"  CROSS-ARB EXECUTED: {result['contracts']}x profit=${result['expected_profit']:.2f}")
+                                    self.risk.record(ca["kalshi_ticker"], ca["title"], "cross_arb",
+                                        result["contracts"], int(ca["cost_cents"]), 99,
+                                        int(ca["profit_cents"]), f"Cross-arb: {ca['strategy_desc']}", 0, 0,
+                                        platform="cross")
+                                    self.notifier.notify_arbitrage({
+                                        "ticker": ca["kalshi_ticker"], "title": ca["title"],
+                                        "yes_price": ca.get("k_price", 0), "no_price": ca.get("p_price", 0),
+                                        "total_cost": ca["cost_cents"], "profit_cents": ca["profit_cents"]})
+                                elif result.get("naked_position"):
+                                    log.error(f"  CROSS-ARB: NAKED POSITION -- Leg 1 filled but Leg 2 failed!")
+                                    self.notifier.send("ALERT: Naked Arb Position",
+                                        f"Cross-arb Leg 2 failed!\nMarket: {ca['title']}\n"
+                                        f"Kalshi leg filled but Polymarket leg FAILED.\n"
+                                        f"Manual intervention may be needed.")
+                            except Exception as ex:
+                                log.error(f"  Cross-arb execution failed: {ex}")
+                else:
+                    log.info("  No cross-platform arbitrage found")
+            except Exception as e:
+                log.error(f"Cross-platform arb phase failed: {e}")
+
+        # ══════════════════════════════════════
+        # PHASE 2: WITHIN-MARKET ARBITRAGE (fast, no AI)
+        # ══════════════════════════════════════
+        log.info("Phase 2: Within-market arbitrage scan...")
+        arb_opps = scan_arbitrage(self.api, mkts, ob_cache=self._last_orderbook_cache)
+        SHARED["_arb_opportunities"] = len(arb_opps) + SHARED.get("_cross_arb_opportunities", 0)
         if arb_opps:
             for a in arb_opps[:3]:
                 log.info(f"  ARB: {a['ticker']} -- yes:{a['yes_price']:.0f}c + no:{a['no_price']:.0f}c = {a['total_cost']:.0f}c -- profit: {a['profit_cents']:.1f}c")
                 if not self.dry:
-                    # Execute both legs
                     try:
                         self.api.place_order(a["ticker"],"yes",1,int(a["yes_price"]))
                         self.api.place_order(a["ticker"],"no",1,int(a["no_price"]))
@@ -1670,13 +2334,65 @@ class Agent:
                         self.notifier.notify_arbitrage(a)
                     except Exception as ex: log.error(f"  ARB failed: {ex}")
         else:
-            log.info("  No arbitrage found (normal)")
+            log.info("  No within-market arbitrage found (normal)")
 
-        # ── PHASE 2: AI-DRIVEN DIRECTIONAL TRADING ──
+        # ══════════════════════════════════════
+        # PHASE 3: QUICK-FLIP SCAN (fast, light AI)
+        # ══════════════════════════════════════
+        if CFG.get("quickflip_enabled", True):
+            log.info("Phase 3: Quick-flip scan...")
+            try:
+                all_scannable = mkts + poly_mkts
+                qf_candidates = find_quickflip_candidates(all_scannable,
+                    min_price=CFG.get("quickflip_min_price", 3),
+                    max_price=CFG.get("quickflip_max_price", 15),
+                    min_volume=max(50, CFG.get("min_volume", 10)))
+                SHARED["_quickflip_active"] = len(qf_candidates)
+                if qf_candidates:
+                    for qf in qf_candidates[:3]:
+                        m = qf["market"]
+                        log.info(f"  QF: {m.get('title','')[:40]} -- {qf['side']} @{qf['entry_price']}c target:{qf['target_price']}c ROI:{qf['potential_roi']:.0f}%")
+                        # Quick-flip uses smaller bet sizes
+                        qf_max = CFG.get("quickflip_max_bet", 3.0)
+                        if not self.dry and qf_max > 0:
+                            try:
+                                qf_contracts = max(1, int(qf_max / (qf["entry_price"] / 100)))
+                                platform = qf.get("platform", "kalshi")
+                                tk = m.get("ticker", "")
+                                if platform == "kalshi" and tk:
+                                    self.api.place_order(tk, qf["side"], qf_contracts, qf["entry_price"])
+                                    log.info(f"  QF EXECUTED: {qf['side']} {qf_contracts}x @{qf['entry_price']}c on Kalshi")
+                                    self.risk.record(tk, m.get("title", ""), qf["side"], qf_contracts,
+                                        qf["entry_price"], 50, int(qf["potential_roi"]),
+                                        f"Quick-flip: target {qf['target_price']}c", 0, 0, platform="kalshi")
+                                elif platform == "polymarket" and self.poly_api and self.poly_api.is_trading_enabled:
+                                    token = m.get("token_id", "")
+                                    if token:
+                                        self.poly_api.place_order(token, qf["side"], qf_contracts, qf["entry_price"])
+                                        log.info(f"  QF EXECUTED: {qf['side']} {qf_contracts}x @{qf['entry_price']}c on Polymarket")
+                                        self.risk.record(tk, m.get("title", ""), qf["side"], qf_contracts,
+                                            qf["entry_price"], 50, int(qf["potential_roi"]),
+                                            f"Quick-flip: target {qf['target_price']}c", 0, 0, platform="polymarket")
+                            except Exception as ex:
+                                log.debug(f"  QF execution failed: {ex}")
+                else:
+                    log.info("  No quick-flip candidates found")
+            except Exception as e:
+                log.debug(f"Quick-flip phase failed: {e}")
+
+        # ══════════════════════════════════════
+        # PHASE 4: AI-DRIVEN DIRECTIONAL TRADING (heavy AI)
+        # Runs every ai_scan_interval_multiplier scans to save Claude credits
+        # ══════════════════════════════════════
+        if not ai_due:
+            log.info(f"Phase 4: SKIPPED (next AI scan in {CFG.get('ai_scan_interval_multiplier', 5) - (self._scan_number % CFG.get('ai_scan_interval_multiplier', 5))} scans)")
+            self._finish_scan(bal, poly_bal)
+            return
+        log.info("Phase 4: AI directional trading...")
         short_term, long_term = filter_and_rank(mkts)
         log.info(f"Short-term (<{CFG['max_close_hours']}h): {len(short_term)} | Long-term: {len(long_term)}")
 
-        # Expand NWS forecasts for any weather markets we found
+        # Expand NWS forecasts for weather markets
         weather_mkts = [m for m in short_term + long_term if m.get("_category")=="weather"]
         if weather_mkts:
             try: self.data.expand_nws_for_markets(weather_mkts)
@@ -1684,7 +2400,7 @@ class Agent:
 
         batch = short_term[:CFG["markets_per_scan"]]
         if long_term: batch.extend(long_term[:max(10, CFG["markets_per_scan"] - len(batch))])
-        if not batch: SHARED["status"]="Idle -- no targets"; return
+        if not batch: SHARED["status"]="Idle -- no targets"; self._finish_scan(bal, poly_bal); return
 
         existing = set()
         try:
@@ -1700,13 +2416,21 @@ class Agent:
         data_brief = self.data.format_brief_for_scan()
         cands = self.debate.quick_scan(batch, existing, data_brief)
         log.info(f"Candidates: {len(cands)}")
-        if not cands: SHARED["status"]="Idle -- no edge"; self._finish_scan(); return
+        if not cands: SHARED["status"]="Idle -- no edge"; self._finish_scan(bal, poly_bal); return
 
         for c in cands:
             cm=" [CANT-MISS]" if c.get("is_cant_miss") else ""
             log.info(f"  > {c.get('ticker','?')}: edge~{c.get('initial_edge_estimate','?')}% {c.get('side','?')}{cm}")
 
-        # ── PHASE 3: BULL vs BEAR DEBATE on top candidates ──
+        # Build Polymarket match lookup for best-price routing
+        poly_match_lookup = {}
+        if self.poly_enabled and self.cross_platform_matches:
+            for match in self.cross_platform_matches:
+                k_ticker = match["kalshi"].get("ticker", "")
+                if k_ticker:
+                    poly_match_lookup[k_ticker] = match["polymarket"]
+
+        # ── BULL vs BEAR DEBATE on top candidates ──
         for cand in cands[:CFG["deep_dive_top_n"]]:
             if not SHARED["enabled"]: break
             tk=cand.get("ticker","")
@@ -1718,25 +2442,58 @@ class Agent:
             SHARED["status"]=f"Debating {tk}..."
             log.info(f"\n  DEBATE: [{cat.upper()}] {tk} -- {mkt.get('title','')[:50]}")
 
+            # ── Best-price routing: check both platforms ──
+            poly_match = poly_match_lookup.get(tk)
+            trade_platform = "kalshi"  # default
             ob=None; ob_spread=999
-            try:
-                ob=self.api.orderbook(tk)
-                # Calculate orderbook spread -- wide spread = bad fills
-                book=ob.get("orderbook",{})
-                yb=book.get("yes",book.get("yes_dollars",[]))
-                nb=book.get("no",book.get("no_dollars",[]))
-                if yb and nb:
-                    by=parse_orderbook_price(yb[0][0] if isinstance(yb[0],list) else yb[0])
-                    bn=parse_orderbook_price(nb[0][0] if isinstance(nb[0],list) else nb[0])
-                    if by and bn:
-                        ob_spread=int(by+bn-100) if by+bn>100 else int(100-by-bn)
-                        log.info(f"  Orderbook: YES={by}c NO={bn}c spread={ob_spread}c")
-                    else:
-                        log.debug(f"  Orderbook: invalid prices for {tk} (raw YES={yb[0]}, NO={nb[0]})")
-            except Exception as e:
-                log.debug(f"  Orderbook fetch error for {tk}: {e}")
 
-            # Skip markets with very wide spreads -- we'll get filled at bad prices
+            if poly_match and self.poly_api:
+                # We have a Polymarket match -- check both platforms for best price
+                try:
+                    ob=self.api.orderbook(tk)
+                    book=ob.get("orderbook",{})
+                    yb=book.get("yes",book.get("yes_dollars",[]))
+                    nb=book.get("no",book.get("no_dollars",[]))
+                    if yb and nb:
+                        by=parse_orderbook_price(yb[0][0] if isinstance(yb[0],list) else yb[0])
+                        bn=parse_orderbook_price(nb[0][0] if isinstance(nb[0],list) else nb[0])
+                        if by and bn:
+                            ob_spread=int(by+bn-100) if by+bn>100 else int(100-by-bn)
+                            log.info(f"  Orderbook (Kalshi): YES={by}c NO={bn}c spread={ob_spread}c")
+                except Exception as e:
+                    log.debug(f"  Kalshi orderbook error: {e}")
+
+                # Check Polymarket price too
+                try:
+                    p_token = poly_match.get("token_id", "")
+                    if p_token:
+                        p_ob = self.poly_api.orderbook(p_token)
+                        p_book = p_ob.get("orderbook", {})
+                        p_yes = p_book.get("yes", [])
+                        p_no = p_book.get("no", [])
+                        if p_yes:
+                            p_yes_price = _best_ask(p_yes)
+                            log.info(f"  Orderbook (Polymarket): YES={p_yes_price}c")
+                except Exception as e:
+                    log.debug(f"  Polymarket orderbook error: {e}")
+            else:
+                # Kalshi only
+                try:
+                    ob=self.api.orderbook(tk)
+                    book=ob.get("orderbook",{})
+                    yb=book.get("yes",book.get("yes_dollars",[]))
+                    nb=book.get("no",book.get("no_dollars",[]))
+                    if yb and nb:
+                        by=parse_orderbook_price(yb[0][0] if isinstance(yb[0],list) else yb[0])
+                        bn=parse_orderbook_price(nb[0][0] if isinstance(nb[0],list) else nb[0])
+                        if by and bn:
+                            ob_spread=int(by+bn-100) if by+bn>100 else int(100-by-bn)
+                            log.info(f"  Orderbook: YES={by}c NO={bn}c spread={ob_spread}c")
+                        else:
+                            log.debug(f"  Orderbook: invalid prices for {tk}")
+                except Exception as e:
+                    log.debug(f"  Orderbook fetch error for {tk}: {e}")
+
             if ob_spread > 25:
                 log.info(f"  -> SKIP: spread {ob_spread}c too wide (>25c)")
                 continue
@@ -1757,8 +2514,19 @@ class Agent:
 
             yc=mkt.get("yes_bid",mkt.get("last_price",50)) or 50
 
-            # Smart pricing from orderbook -- use best available price, not AI guess
+            # ── Best-price routing for execution ──
             bp=r["price_cents"]
+            side_lower = r["side"].lower()
+            if poly_match and self.poly_api and self.poly_api.is_trading_enabled:
+                routed_platform, routed_price, routed_ob = get_best_price(
+                    tk, self.api, poly_match, self.poly_api, side_lower,
+                    CFG["taker_fee_per_contract"], CFG.get("polymarket_fee_per_contract", 0.00))
+                if routed_platform and routed_price:
+                    trade_platform = routed_platform
+                    if bp == 0: bp = routed_price
+                    if routed_ob: ob = routed_ob
+                    log.info(f"  Best price: {trade_platform} @{routed_price}c")
+
             if ob and bp==0:
                 book=ob.get("orderbook",{})
                 if r["side"]=="YES":
@@ -1774,60 +2542,75 @@ class Agent:
             if bp==0: bp=yc if r["side"]=="YES" else 100-yc
             bp=max(1,min(99,bp))
 
+            # Use platform-specific fee
+            trade_fee = CFG["taker_fee_per_contract"] if trade_platform == "kalshi" else CFG.get("polymarket_fee_per_contract", 0.00)
+
             pfk=r["probability"] if r["side"]=="YES" else 100-r["probability"]
-            contracts,cost=kelly(pfk,bp,bal,CFG["max_bet_per_trade"],CFG["taker_fee_per_contract"],CFG["kelly_fraction"])
+            contracts,cost=kelly(pfk, bp, combined_bal, active_max_bet, trade_fee, active_kelly)
             if contracts==0: log.info("  -> Kelly: no bet (EV negative after fees)"); continue
 
-            fees=contracts*CFG["taker_fee_per_contract"]; total=cost+fees
+            fees=contracts*trade_fee; total=cost+fees
             net_profit=contracts*(100-bp)/100-fees
             roi_pct=(net_profit/total*100) if total>0 else 0
-            log.info(f"  Kelly: {contracts}x {r['side']} @{bp}c = ${cost:.2f} +${fees:.2f}fee")
+            platform_tag = f"[{trade_platform.upper()}]" if trade_platform != "kalshi" else ""
+            log.info(f"  Kelly: {contracts}x {r['side']} @{bp}c = ${cost:.2f} +${fees:.2f}fee {platform_tag}")
             log.info(f"  If correct: ${net_profit:.2f} net ({roi_pct:.0f}% ROI)")
 
             ok,reason=self.risk.check(total,r["confidence"],abs(r["edge"]))
             if not ok: log.info(f"  -> BLOCKED: {reason}"); continue
             if net_profit<=0: log.info("  -> SKIP: not profitable after fees"); continue
 
-            # Final sanity check: edge must be at least 2x the spread to overcome execution risk
             if ob_spread > 0 and abs(r["edge"]) < ob_spread * 0.3:
                 log.info(f"  -> SKIP: edge {r['edge']}% too small vs spread {ob_spread}c")
                 continue
 
             if self.dry:
-                log.info(f"  * DRY RUN: {r['side']} {contracts}x @{bp}c (${cost:.2f}) [{cat}]")
+                log.info(f"  * DRY RUN: {r['side']} {contracts}x @{bp}c (${cost:.2f}) [{cat}] on {trade_platform}")
                 continue
 
-            log.info(f"  * EXECUTE: BUY {r['side'].upper()} {contracts}x {tk} @{bp}c [{cat}]")
+            log.info(f"  * EXECUTE: BUY {r['side'].upper()} {contracts}x {tk} @{bp}c [{cat}] on {trade_platform.upper()}")
             try:
-                res=self.api.place_order(tk,r["side"].lower(),contracts,bp)
-                oid=res.get("order",{}).get("order_id","?")
-                log.info(f"  OK: order {oid} -- {res.get('order',{}).get('status','?')}")
-                self.risk.record(tk,mkt.get("title",""),r["side"].lower(),contracts,bp,
+                if trade_platform == "kalshi":
+                    res=self.api.place_order(tk,side_lower,contracts,bp)
+                    oid=res.get("order",{}).get("order_id","?")
+                    log.info(f"  OK: order {oid} -- {res.get('order',{}).get('status','?')}")
+                elif trade_platform == "polymarket" and self.poly_api:
+                    token = poly_match.get("token_id", "") if side_lower == "yes" else poly_match.get("no_token_id", poly_match.get("token_id", ""))
+                    res = self.poly_api.place_order(token, side_lower, contracts, bp)
+                    log.info(f"  OK: Polymarket order placed")
+
+                self.risk.record(tk,mkt.get("title",""),side_lower,contracts,bp,
                     r["confidence"],r["edge"],r["evidence"],r["bull_prob"],r["bear_prob"],
-                    probability=r["probability"])
+                    probability=r["probability"],platform=trade_platform)
                 self.notifier.notify_trade({"ticker":tk,"title":mkt.get("title",""),
                     "side":r["side"],"contracts":contracts,"price_cents":bp,"cost":cost,
                     "edge":r["edge"],"confidence":r["confidence"],
-                    "bull_prob":r["bull_prob"],"bear_prob":r["bear_prob"],"evidence":r["evidence"]})
+                    "bull_prob":r["bull_prob"],"bear_prob":r["bear_prob"],"evidence":r["evidence"],
+                    "platform":trade_platform})
                 bal=self.api.balance()
+                if self.poly_api: poly_bal = self.poly_api.balance()
                 with SHARED_LOCK:
-                    SHARED["balance"]=bal
+                    SHARED["balance"]=bal; SHARED["poly_balance"]=poly_bal
             except Exception as ex: log.error(f"  Order failed: {ex}")
             time.sleep(5)
 
-        self._finish_scan()
+        self._finish_scan(bal, poly_bal)
 
-    def _finish_scan(self):
+    def _finish_scan(self, kalshi_bal=None, poly_bal=None):
         with SHARED_LOCK:
             SHARED["_risk_summary"]=self.risk.summary(); SHARED["_trades"]=self.risk.trades
             SHARED["status"]="Idle"; SHARED["last_scan"]=datetime.datetime.now().strftime("%H:%M:%S")
             SHARED["scan_count"]+=1
+            if kalshi_bal is not None: SHARED["balance"] = kalshi_bal
+            if poly_bal is not None: SHARED["poly_balance"] = poly_bal
         s=self.risk.summary()
-        log.info(f"\nScan done. {s['day_trades']} trades, exposure {s['exposure']}")
+        combined = (kalshi_bal or 0) + (poly_bal or 0)
+        log.info(f"\nScan done. {s['day_trades']} trades, exposure {s['exposure']}, combined balance ${combined:.2f}")
 
     def run(self):
         iv=CFG["scan_interval_minutes"]*60
-        log.info(f"Agent running. Scan every {CFG['scan_interval_minutes']}m. Ctrl+C to stop.")
+        ai_iv = iv * CFG.get("ai_scan_interval_multiplier", 5)
+        log.info(f"Agent running. Arb scan every {CFG['scan_interval_minutes']}m, AI debate every {ai_iv//60}m. Ctrl+C to stop.")
         SHARED["status"]="Idle"
 
         # Start background threads
@@ -1852,7 +2635,7 @@ class Agent:
             self.stop_event.set()
 
 def main():
-    ap=argparse.ArgumentParser(description="Kalshi AI Agent v5 -- Debate Protocol")
+    ap=argparse.ArgumentParser(description="Kalshi AI Agent v6 -- Cross-Platform Arbitrage")
     ap.add_argument("--config",type=str); ap.add_argument("--dry-run",action="store_true")
     ap.add_argument("--scan-once",action="store_true"); ap.add_argument("--no-dashboard",action="store_true")
     ap.add_argument("--report",action="store_true",help="Generate performance report and exit")
@@ -1865,6 +2648,10 @@ def main():
         "ANTHROPIC_API_KEY": "anthropic_api_key",
         "FRED_API_KEY": "fred_api_key",
         "KALSHI_EMAIL_PASSWORD": "email_password",
+        "POLYMARKET_PRIVATE_KEY": "polymarket_private_key",
+        "POLYMARKET_API_KEY": "polymarket_api_key",
+        "POLYMARKET_API_SECRET": "polymarket_api_secret",
+        "POLYMARKET_API_PASSPHRASE": "polymarket_api_passphrase",
     }
     for env_var, cfg_key in env_overrides.items():
         val = os.environ.get(env_var)
@@ -1887,6 +2674,9 @@ def main():
             start_dashboard(); print(f"\n  Dashboard: http://localhost:{CFG.get('dashboard_port',9000)}\n")
         with SHARED_LOCK:
             SHARED["balance"]=a.api.balance()
+            if a.poly_enabled and a.poly_api:
+                try: SHARED["poly_balance"]=a.poly_api.balance()
+                except Exception: pass
         if args.scan_once: a.scan()
         else: a.run()
     except KeyboardInterrupt: log.info("\nStopped.")
