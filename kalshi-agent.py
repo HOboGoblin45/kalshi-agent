@@ -259,22 +259,53 @@ class DataFetcher:
         self.cache[key] = (val, time.time())
         return val
 
-    def fetch_all(self):
-        """Run before each scan. Populates self.brief with latest data."""
+    # Which FRED series each market category needs
+    FRED_BY_CATEGORY = {
+        "fed_rates": ["fed_funds", "treasury_10y", "treasury_2y"],
+        "inflation": ["cpi", "core_cpi"],
+        "employment": ["unemployment", "nonfarm", "jobless_claims"],
+        "gdp_growth": ["fed_funds"],
+        "markets": ["treasury_10y", "treasury_2y"],
+        "energy": ["gas_price"],
+    }
+
+    def fetch_all(self, market_categories=None):
+        """Run before each scan. Populates self.brief with latest data.
+
+        market_categories: optional set of category strings from the current batch.
+            If provided, only fetches data relevant to those categories (saves HTTP calls).
+            If None, fetches everything (backwards compatible).
+        """
         self.brief = {}
         self.feed_status = {"nws": False, "fred": False}
-        # NWS -- no key needed
-        try:
-            self.brief["nws_forecasts"] = self._fetch_nws_batch()
-            if self.brief["nws_forecasts"]:
-                self.feed_status["nws"] = True
-        except Exception as e:
-            log.warning(f"NWS prefetch failed: {e}")
+
+        need_nws = market_categories is None or "weather" in market_categories
+        need_fred_cats = set()
+        if market_categories is None:
+            need_fred_cats = set(self.FRED_BY_CATEGORY.keys())
+        else:
+            need_fred_cats = market_categories & set(self.FRED_BY_CATEGORY.keys())
+
+        # NWS -- only if weather markets exist
+        if need_nws:
+            try:
+                self.brief["nws_forecasts"] = self._fetch_nws_batch()
+                if self.brief["nws_forecasts"]:
+                    self.feed_status["nws"] = True
+            except Exception as e:
+                log.warning(f"NWS prefetch failed: {e}")
+                self.brief["nws_forecasts"] = {}
+        else:
+            log.debug("Data prefetch: skipping NWS (no weather markets)")
             self.brief["nws_forecasts"] = {}
-        # FRED -- requires key
-        if self.fred_key:
+
+        # FRED -- only series needed by current market categories
+        if self.fred_key and need_fred_cats:
             fred_ok = 0
-            for key in ["fed_funds","cpi","core_cpi","unemployment","nonfarm","jobless_claims","gas_price","treasury_10y","treasury_2y"]:
+            needed_series = set()
+            for cat in need_fred_cats:
+                needed_series.update(self.FRED_BY_CATEGORY.get(cat, []))
+            for key in needed_series:
                 try:
                     self.brief[key] = self._fetch_fred(key)
                     if self.brief[key]: fred_ok += 1
@@ -283,11 +314,17 @@ class DataFetcher:
                     self.brief[key] = None
             if fred_ok > 0:
                 self.feed_status["fred"] = True
+            skipped = 9 - len(needed_series)
+            if skipped > 0:
+                log.debug(f"Data prefetch: skipped {skipped} irrelevant FRED series")
+        elif not need_fred_cats:
+            log.debug("Data prefetch: skipping FRED (no econ/finance markets)")
+
         data_count = sum(1 for v in self.brief.values() if v)
-        if data_count == 0:
+        if data_count == 0 and (need_nws or need_fred_cats):
             log.warning("Data prefetch: ZERO feeds loaded -- AI will rely on web search only")
-        else:
-            log.info(f"Data prefetch: {data_count} feeds loaded (NWS:{'OK' if self.feed_status['nws'] else 'FAIL'} FRED:{'OK' if self.feed_status['fred'] else 'FAIL'})")
+        elif data_count > 0:
+            log.info(f"Data prefetch: {data_count} feeds loaded (NWS:{'OK' if self.feed_status['nws'] else 'SKIP'} FRED:{'OK' if self.feed_status['fred'] else 'SKIP'})")
         return self.brief
 
     def _fetch_nws_batch(self):
@@ -2202,9 +2239,20 @@ class Agent:
         for m in mkts:
             if "platform" not in m: m["platform"] = "kalshi"
 
-        # ── PRE-FETCH LIVE DATA (NWS + FRED) ──
+        # ── PRE-FETCH LIVE DATA (only what's needed for current markets) ──
         SHARED["status"]="Fetching live data..."
-        self.data.fetch_all()
+        # Quick category scan to determine which data feeds to fetch
+        cat_rules = CFG.get("category_rules", {})
+        active_categories = set()
+        for m in mkts:
+            text = " ".join(str(m.get(k,"")) for k in ["title","ticker","category","subtitle"]).lower()
+            for cat_name, cat_kws in cat_rules.items():
+                if any(kw in text for kw in cat_kws):
+                    active_categories.add(cat_name)
+                    break
+        if active_categories:
+            log.info(f"Active market categories: {', '.join(sorted(active_categories))}")
+        self.data.fetch_all(market_categories=active_categories if active_categories else None)
 
         # ══════════════════════════════════════
         # PHASE 1: CROSS-PLATFORM ARBITRAGE (fastest, no AI)
