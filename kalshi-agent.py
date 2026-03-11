@@ -2652,6 +2652,7 @@ def main():
         "POLYMARKET_API_KEY": "polymarket_api_key",
         "POLYMARKET_API_SECRET": "polymarket_api_secret",
         "POLYMARKET_API_PASSPHRASE": "polymarket_api_passphrase",
+        "POLYMARKET_FUNDER": "polymarket_funder",
     }
     for env_var, cfg_key in env_overrides.items():
         val = os.environ.get(env_var)
