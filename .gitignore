@@ -1,34 +1,21 @@
-# Secrets and credentials
-kalshi-config.json
+# Secrets and config with real values
+kalshi-agent/kalshi-config.json
+.env
+.env.*
+!.env.example
+
+# Key files
 *.key
 *.key.txt
-.env
+
+# Logs
+*.log
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
-*.egg-info/
-dist/
-build/
-
-# Logs and data
-*.log
-*.log.*
-kalshi-data.json
-kalshi-trades.json
-kalshi-calibration.json
-kalshi-weekly-report.txt
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
 
 # OS
 .DS_Store
 Thumbs.db
-
-# Claude
-.claude/

@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "kalshi-agent",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["kalshi-agent.py", "--config", "kalshi-config.json"],
+      "port": 9000
+    },
+    {
+      "name": "kalshi-agent-dry",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["kalshi-agent.py", "--config", "kalshi-config.json", "--dry-run"],
+      "port": 9000
+    }
+  ]
+}

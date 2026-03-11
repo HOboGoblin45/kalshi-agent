@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''kalshi-agent.py'', doraise=True\\); print\\(''Syntax OK''\\)\")",
+      "Bash(python -c \":*)",
+      "Bash(\"C:\\\\Users\\\\ccres\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\python.exe\" -c \"import py_compile; py_compile.compile\\(r''C:\\\\Users\\\\ccres\\\\OneDrive\\\\Desktop\\\\kalshi-agent\\\\kalshi-agent.py'', doraise=True\\); print\\(''Syntax OK''\\)\")",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(timeout 30)",
+      "Bash(\"C:\\\\Users\\\\ccres\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\python.exe\" -X utf8 -c \":*)",
+      "Bash(\"C:\\\\Users\\\\ccres\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\python.exe\" -c \"print\\(''°''.encode\\(''cp1252''\\)\\)\")"
+    ]
+  }
+}

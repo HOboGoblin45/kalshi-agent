@@ -1,0 +1,14 @@
+[
+  {
+    "time": "2026-03-10T17:04:32.162130",
+    "ticker": "KXMVECROSSCATEGORY-S20269F43D9BDD4B-C1693288EE9",
+    "side": "arb",
+    "our_probability": 0,
+    "our_confidence": 99,
+    "market_price": 5,
+    "edge": 81,
+    "bull_prob": 0,
+    "bear_prob": 0,
+    "resolved": null
+  }
+]
