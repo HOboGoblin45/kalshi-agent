@@ -16,6 +16,8 @@ build/
 *.log
 *.log.*
 kalshi-data.json
+kalshi-trades.json
+kalshi-calibration.json
 kalshi-weekly-report.txt
 
 # IDE

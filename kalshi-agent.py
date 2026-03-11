@@ -1033,8 +1033,15 @@ MARKETS:
 {mlist}
 {data_section}
 
+CRITICAL RULES FOR YOUR RESPONSE:
+- Each entry MUST have the EXACT ticker from the market list above (e.g. "KXTEMP-25MAR11-PHI-T50-B60")
+- Do NOT group multiple markets into one entry
+- Do NOT use descriptions like "Multiple weather markets" as tickers
+- One JSON object per individual market
+- The ticker field must EXACTLY match a ticker shown in the MARKETS section above
+
 Return ONLY a JSON array:
-[{{{{"ticker":"EXACT_TICKER","title":"title","category":"weather","market_yes_cents":65,"initial_edge_estimate":8,"side":"YES","evidence":"NWS forecast 72F, market implies only 65%% chance of >65F","is_cant_miss":false}}}}]
+[{{{{"ticker":"KXTEMP-25MAR11-PHI-T50-B60","title":"Philadelphia temp above 60F","category":"weather","market_yes_cents":65,"initial_edge_estimate":8,"side":"YES","evidence":"NWS forecast 72F, market implies only 65%% chance of >65F","is_cant_miss":false}}}}]
 Return [] ONLY if you truly cannot find ANY edge after thorough research."""
 
         for attempt in range(2):
@@ -1384,15 +1391,17 @@ def score_market(m):
 def filter_and_rank(markets):
     kws=CFG["target_keywords"]; cat_rules=CFG.get("category_rules",{})
     short_term=[]; long_term=[]
+    _f_price=0; _f_vol=0; _f_hrs=0; _f_kw=0; _short_samples=[]; _close_samples=[]
     for m in markets:
         yc=m.get("yes_bid",m.get("last_price",50)) or 50
-        if yc>CFG["max_price_cents"] or yc<CFG["min_price_cents"]: continue
-        if (m.get("volume",0) or 0)<CFG["min_volume"]: continue
+        if yc>CFG["max_price_cents"] or yc<CFG["min_price_cents"]: _f_price+=1; continue
+        if (m.get("volume",0) or 0)<CFG["min_volume"]: _f_vol+=1; continue
         hrs=calc_hours_left(m)
-        if hrs<CFG["min_close_hours"]: continue
+        if hrs<CFG["min_close_hours"]: _f_hrs+=1; continue
+        if len(_close_samples)<3: _close_samples.append(f"{m.get('ticker','?')}: hrs={hrs:.1f} close={m.get('close_time','N/A')} exp={m.get('expiration_time','N/A')}")
         m["_hrs_left"]=hrs
         text=" ".join(str(m.get(k,"")) for k in ["title","ticker","category","subtitle","event_ticker"]).lower()
-        if not any(kw in text for kw in kws): continue
+        if not any(kw in text for kw in kws): _f_kw+=1; continue
         # Tag with best category match
         m["_category"]="other"
         best_cat_score=0
@@ -1402,9 +1411,11 @@ def filter_and_rank(markets):
         m["_score"]=score_market(m)
         if hrs<=CFG["max_close_hours"]: short_term.append(m)
         else: long_term.append(m)
+    log.debug(f"Filter: {len(markets)} total -> price:{_f_price} vol:{_f_vol} hrs:{_f_hrs} kw:{_f_kw} dropped | {len(short_term)} short + {len(long_term)} long pass")
+    if _close_samples: log.debug(f"Sample close times: {_close_samples}")
     short_term.sort(key=lambda x:x.get("_score",0),reverse=True)
     long_term.sort(key=lambda x:x.get("_score",0),reverse=True)
-    return short_term, long_term[:5]
+    return short_term, long_term[:CFG["markets_per_scan"]]
 
 # ════════════════════════════════════════
 # RISK MANAGER + CALIBRATION
@@ -1672,7 +1683,7 @@ class Agent:
             except Exception as e: log.debug(f"NWS expansion failed: {e}")
 
         batch = short_term[:CFG["markets_per_scan"]]
-        if long_term: batch.extend(long_term[:5])
+        if long_term: batch.extend(long_term[:max(10, CFG["markets_per_scan"] - len(batch))])
         if not batch: SHARED["status"]="Idle -- no targets"; return
 
         existing = set()
