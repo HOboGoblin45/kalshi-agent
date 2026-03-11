@@ -307,7 +307,7 @@ def _depth_at_price(asks, price):
     return max(total, 1)
 
 
-def execute_cross_arb(kalshi_api, poly_api, opportunity, max_cost_dollars=10.0, dry_run=False):
+def execute_cross_arb(kalshi_api, poly_api, opp, max_cost_dollars=10.0, dry_run=False):
     """
     Execute both legs of a cross-platform arbitrage.
 
@@ -316,9 +316,9 @@ def execute_cross_arb(kalshi_api, poly_api, opportunity, max_cost_dollars=10.0, 
 
     Returns: dict with execution result
     """
-    strat = opportunity["strategy"]
-    depth = opportunity.get("depth", 1)
-    cost_per_pair = opportunity["cost_cents"] / 100.0
+    strat = opp["strategy"]
+    depth = opp.get("depth", 1)
+    cost_per_pair = opp["cost_cents"] / 100.0
 
     # Calculate number of contracts (pairs)
     contracts = min(
@@ -330,26 +330,26 @@ def execute_cross_arb(kalshi_api, poly_api, opportunity, max_cost_dollars=10.0, 
         return {"success": False, "reason": "Zero contracts (cost too high or no depth)"}
 
     total_cost = round(contracts * cost_per_pair, 2)
-    total_profit = round(contracts * opportunity["profit_cents"] / 100, 2)
+    total_profit = round(contracts * opp["profit_cents"] / 100, 2)
 
     if dry_run:
         return {
             "success": True, "dry_run": True,
             "contracts": contracts, "total_cost": total_cost,
-            "expected_profit": total_profit, "strategy": opportunity["strategy_desc"],
+            "expected_profit": total_profit, "strategy": opp["strategy_desc"],
         }
 
     # Leg 1: Kalshi (less liquid -- place first)
     try:
         if strat == 1:
             k_result = kalshi_api.place_order(
-                opportunity["kalshi_ticker"], "yes", contracts, opportunity["k_price"]
+                opp["kalshi_ticker"], "yes", contracts, opp["k_price"]
             )
         else:
             k_result = kalshi_api.place_order(
-                opportunity["kalshi_ticker"], "no", contracts, opportunity["k_price"]
+                opp["kalshi_ticker"], "no", contracts, opp["k_price"]
             )
-        log.info(f"  ARB Leg 1 (Kalshi): placed {contracts}x @{opportunity['k_price']}c")
+        log.info(f"  ARB Leg 1 (Kalshi): placed {contracts}x @{opp['k_price']}c")
     except Exception as e:
         log.error(f"  ARB Leg 1 (Kalshi) FAILED: {e}")
         return {"success": False, "reason": f"Leg 1 failed: {e}"}
@@ -361,16 +361,16 @@ def execute_cross_arb(kalshi_api, poly_api, opportunity, max_cost_dollars=10.0, 
     try:
         if strat == 1:
             # Buy NO on Polymarket
-            token_id = opportunity.get("poly_no_token", opportunity["poly_token"])
+            token_id = opp.get("poly_no_token", opp["poly_token"])
             p_result = poly_api.place_order(
-                token_id, "no", contracts, opportunity["p_price"]
+                token_id, "no", contracts, opp["p_price"]
             )
         else:
             # Buy YES on Polymarket
             p_result = poly_api.place_order(
-                opportunity["poly_token"], "yes", contracts, opportunity["p_price"]
+                opp["poly_token"], "yes", contracts, opp["p_price"]
             )
-        log.info(f"  ARB Leg 2 (Polymarket): placed {contracts}x @{opportunity['p_price']}c")
+        log.info(f"  ARB Leg 2 (Polymarket): placed {contracts}x @{opp['p_price']}c")
     except Exception as e:
         log.error(f"  ARB Leg 2 (Polymarket) FAILED: {e} -- Leg 1 is NAKED, monitor closely!")
         return {
@@ -383,7 +383,7 @@ def execute_cross_arb(kalshi_api, poly_api, opportunity, max_cost_dollars=10.0, 
         "contracts": contracts,
         "total_cost": total_cost,
         "expected_profit": total_profit,
-        "strategy": opportunity["strategy_desc"],
+        "strategy": opp["strategy_desc"],
     }
 
 
