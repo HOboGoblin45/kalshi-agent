@@ -98,7 +98,7 @@ DEFAULTS={
     "polymarket_api_secret":"",
     "polymarket_api_passphrase":"",
     "polymarket_funder":"",
-    "polymarket_fee_per_contract":0.00,  # Most Polymarket markets are 0% fee
+    "polymarket_fee_per_contract":0.02,  # Polymarket charges ~2% on net winnings; approximate as per-contract fee
     # Cross-platform arbitrage
     "cross_arb_enabled":True,
     "cross_arb_min_profit_cents":2,  # Minimum profit per arb pair
@@ -113,6 +113,9 @@ DEFAULTS={
     # Compounding / aggressive mode
     "aggressive_mode":False,
     "compounding_enabled":True,
+    # Strategy toggles (disable individual strategies)
+    "debate_enabled":True,         # AI Bull/Bear debate directional trades
+    "within_arb_enabled":True,     # Within-market YES+NO < $1 arbitrage
     # Trading parameters (aggressive defaults in v6)
     "max_bet_per_trade":8.00,
     "max_total_exposure":35.00,
@@ -593,9 +596,11 @@ class ExitManager:
     - Position has lost more than exit_loss_pct of its value
     - Position has gained more than exit_profit_pct
     - Position has been held longer than exit_time_hours
+    Monitors both Kalshi and Polymarket positions.
     """
-    def __init__(self, api, risk, notifier):
+    def __init__(self, api, risk, notifier, poly_api=None):
         self.api = api
+        self.poly_api = poly_api
         self.risk = risk
         self.notifier = notifier
         self.loss_pct = CFG.get("exit_loss_pct", 25)
@@ -717,19 +722,106 @@ class ExitManager:
 
         return exits
 
+    def check_poly_positions(self):
+        """Check Polymarket positions for exit conditions based on trade log timestamps."""
+        if not self.poly_api or not self.poly_api.is_trading_enabled:
+            return []
+        exits = []
+        try:
+            positions = self.poly_api.positions()
+        except Exception as e:
+            log.debug(f"Polymarket position check failed: {e}")
+            return exits
+
+        for pos in positions:
+            token_id = pos.get("asset", pos.get("token_id", ""))
+            size = float(pos.get("size", pos.get("position", 0)) or 0)
+            if size == 0 or not token_id:
+                continue
+
+            # Find matching trade in our log by platform=polymarket
+            original = None
+            for t in reversed(self.risk.trades):
+                if t.get("platform") == "polymarket" and t.get("status") == "open":
+                    original = t
+                    break
+            if not original:
+                continue
+
+            entry_price = original.get("price_cents", 50)
+
+            # Check hold time for time-based exit
+            hours_held = 0
+            try:
+                entry_time = datetime.datetime.fromisoformat(original["time"])
+                hours_held = (datetime.datetime.now() - entry_time).total_seconds() / 3600
+            except Exception:
+                pass
+
+            # Get current price from orderbook
+            try:
+                ob = self.poly_api.orderbook(token_id)
+                book = ob.get("orderbook", {})
+                bids = book.get("yes", [])
+                if not bids:
+                    continue
+                current = _best_ask(bids) if bids else None
+                if current is None:
+                    continue
+            except Exception:
+                continue
+
+            pnl_pct = ((current - entry_price) / entry_price * 100) if entry_price > 0 else 0
+
+            reason = None
+            if pnl_pct <= -self.loss_pct:
+                reason = f"Stop loss ({pnl_pct:.0f}% loss)"
+            elif pnl_pct >= self.profit_pct:
+                reason = f"Profit taking ({pnl_pct:.0f}% gain)"
+            elif hours_held >= self.max_hold_hrs:
+                reason = f"Time exit ({hours_held:.0f}h held)"
+
+            if not reason:
+                continue
+
+            contracts = int(size)
+            pnl_dollars = contracts * (current - entry_price) / 100
+            log.info(f"  POLY EXIT: {token_id[:16]}... -- {reason} | entry:{entry_price}c now:{current}c P&L:${pnl_dollars:.2f}")
+
+            # For Polymarket exits, place a sell order
+            try:
+                sell_price = max(1, int(current) - 2) if "Stop" in reason or "Time" in reason else max(1, int(current))
+                side = original.get("side", "yes")
+                self.poly_api.place_order(token_id, "no" if side == "yes" else "yes", contracts, sell_price)
+                original["status"] = "win" if pnl_dollars > 0 else "loss"
+                original["exit_price"] = sell_price
+                original["exit_time"] = datetime.datetime.now().isoformat()
+                original["exit_reason"] = reason
+                original["pnl"] = round(pnl_dollars, 2)
+                self.risk._save()
+                self.risk.day_pnl += pnl_dollars
+                exits.append({"ticker": token_id[:16], "reason": reason, "pnl": pnl_dollars})
+                self.notifier.notify_exit(token_id[:16], original.get("title", ""), side, reason, pnl_dollars)
+            except Exception as e:
+                log.error(f"  POLY EXIT failed: {e}")
+
+        return exits
+
     def run_loop(self, stop_event):
-        """Background thread: check positions periodically."""
+        """Background thread: check positions periodically on both platforms."""
         interval = CFG.get("exit_check_interval_minutes", 10) * 60
         log.info(f"Exit manager: checking positions every {CFG.get('exit_check_interval_minutes',10)}m")
         while not stop_event.is_set():
             try:
                 if SHARED.get("enabled", True) and not SHARED.get("dry_run", False):
                     exits = self.check_positions()
-                    if exits:
+                    poly_exits = self.check_poly_positions()
+                    all_exits = exits + poly_exits
+                    if all_exits:
                         with SHARED_LOCK:
                             SHARED["_risk_summary"] = self.risk.summary()
                             SHARED["_trades"] = self.risk.trades
-                        for e in exits:
+                        for e in all_exits:
                             log.info(f"EXIT completed: {e['ticker']} -> {e['reason']} (${e['pnl']:.2f})")
             except Exception as e:
                 log.warning(f"Exit check error: {e}")
@@ -1242,7 +1334,7 @@ def match_markets(kalshi_markets, poly_markets, threshold=0.70):
     except Exception: pass
     return matches
 
-def scan_cross_platform_arbitrage(matches, kalshi_api, poly_api, fee_kalshi=0.07, fee_poly=0.00):
+def scan_cross_platform_arbitrage(matches, kalshi_api, poly_api, fee_kalshi=0.07, fee_poly=0.02):
     """Scan matched market pairs for cross-platform arbitrage opportunities."""
     opportunities = []
     for match in matches:
@@ -1292,9 +1384,21 @@ def scan_cross_platform_arbitrage(matches, kalshi_api, poly_api, fee_kalshi=0.07
     return opportunities
 
 def _best_ask(asks):
+    """Get best ask price in cents. Handles list, dict, and scalar formats."""
     if not asks: return None
     first = asks[0]
-    return int(first[0]) if isinstance(first, list) else int(first)
+    try:
+        if isinstance(first, dict):
+            raw = float(first.get("price", first.get("p", 0)))
+        elif isinstance(first, (list, tuple)):
+            raw = float(first[0])
+        else:
+            raw = float(first)
+        if 0 < raw < 1: raw = raw * 100
+        price = int(round(raw))
+        return price if 1 <= price <= 99 else None
+    except (ValueError, TypeError, IndexError):
+        return None
 
 def execute_cross_arb(kalshi_api, poly_api, opp, max_cost=10.0, dry_run=False):
     """Execute both legs of a cross-platform arb. Returns result dict."""
@@ -1331,12 +1435,12 @@ def execute_cross_arb(kalshi_api, poly_api, opp, max_cost=10.0, dry_run=False):
 # ════════════════════════════════════════
 # BEST-PRICE ROUTING
 # ════════════════════════════════════════
-def route_order(side, kalshi_price, poly_price, kalshi_fee=0.07, poly_fee=0.00):
+def route_order(side, kalshi_price, poly_price, kalshi_fee=0.07, poly_fee=0.02):
     """Route to the platform with the best effective price."""
     k_eff = kalshi_price + kalshi_fee * 100; p_eff = poly_price + poly_fee * 100
     return ("kalshi", kalshi_price) if k_eff <= p_eff else ("polymarket", poly_price)
 
-def get_best_price(ticker, kalshi_api, poly_match, poly_api, side, kalshi_fee=0.07, poly_fee=0.00):
+def get_best_price(ticker, kalshi_api, poly_match, poly_api, side, kalshi_fee=0.07, poly_fee=0.02):
     """Get the best price across both platforms for a given side."""
     k_price, k_ob, p_price, p_ob = None, None, None, None
     try:
@@ -2154,7 +2258,6 @@ class Agent:
         self.risk=RiskMgr(); self.cache=MarketCache(self.api)
         self.data=DataFetcher()
         self.notifier=Notifier()
-        self.exit_mgr=ExitManager(self.api, self.risk, self.notifier)
         self.reporter=PerformanceReporter(self.risk, self.notifier)
         self.stop_event=threading.Event()
         # Polymarket integration
@@ -2173,6 +2276,7 @@ class Agent:
             except Exception as e:
                 log.error(f"Polymarket init failed: {e} -- running Kalshi-only")
                 self.poly_enabled = False
+        self.exit_mgr=ExitManager(self.api, self.risk, self.notifier, poly_api=self.poly_api)
 
     def _is_ai_scan_due(self):
         """AI debate runs every N scans to save Claude credits. Arb phases run every scan."""
@@ -2318,8 +2422,12 @@ class Agent:
         # ══════════════════════════════════════
         # PHASE 2: WITHIN-MARKET ARBITRAGE (fast, no AI)
         # ══════════════════════════════════════
-        log.info("Phase 2: Within-market arbitrage scan...")
-        arb_opps = scan_arbitrage(self.api, mkts, ob_cache=self._last_orderbook_cache)
+        if not CFG.get("within_arb_enabled", True):
+            log.info("Phase 2: SKIPPED (within_arb_enabled=false)")
+            arb_opps = []
+        else:
+            log.info("Phase 2: Within-market arbitrage scan...")
+            arb_opps = scan_arbitrage(self.api, mkts, ob_cache=self._last_orderbook_cache)
         SHARED["_arb_opportunities"] = len(arb_opps) + SHARED.get("_cross_arb_opportunities", 0)
         if arb_opps:
             for a in arb_opps[:3]:
@@ -2384,6 +2492,10 @@ class Agent:
         # PHASE 4: AI-DRIVEN DIRECTIONAL TRADING (heavy AI)
         # Runs every ai_scan_interval_multiplier scans to save Claude credits
         # ══════════════════════════════════════
+        if not CFG.get("debate_enabled", True):
+            log.info("Phase 4: SKIPPED (debate_enabled=false)")
+            self._finish_scan(bal, poly_bal)
+            return
         if not ai_due:
             log.info(f"Phase 4: SKIPPED (next AI scan in {CFG.get('ai_scan_interval_multiplier', 5) - (self._scan_number % CFG.get('ai_scan_interval_multiplier', 5))} scans)")
             self._finish_scan(bal, poly_bal)
