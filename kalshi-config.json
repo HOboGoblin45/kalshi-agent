@@ -1,7 +1,7 @@
 {
-    "kalshi_api_key_id": "b1986f70-cb70-47e8-ba39-b1039dab720b",
+    "kalshi_api_key_id": "a391a74a-73f8-4624-b3bd-afe4d0678955",
     "kalshi_private_key_path": "C:\\Users\\ccres\\OneDrive\\Desktop\\your-kalshi-key.key.txt",
-    "anthropic_api_key": "",
+    "anthropic_api_key": "ANTHROPIC_API_KEY",
     "fred_api_key": "8e7083141dcc201148fa0864d63202c0",
     "environment": "prod",
     "scan_interval_minutes": 10,
