@@ -171,7 +171,7 @@ def match_markets(kalshi_markets, poly_markets, threshold=0.70, cache_path="mark
 # CROSS-PLATFORM ARBITRAGE SCANNER
 # ════════════════════════════════════════
 
-def scan_cross_platform_arbitrage(matches, kalshi_api, poly_api, fee_kalshi=0.07, fee_poly=0.00):
+def scan_cross_platform_arbitrage(matches, kalshi_api, poly_api, fee_kalshi=0.07, fee_poly=0.02):
     """
     Scan matched market pairs for cross-platform arbitrage.
 
@@ -284,27 +284,96 @@ def scan_cross_platform_arbitrage(matches, kalshi_api, poly_api, fee_kalshi=0.07
 
 
 def _best_ask_price(asks):
-    """Get the best (lowest) ask price from an orderbook side. Returns cents or None."""
+    """Get the best (lowest) ask price from an orderbook side. Returns cents or None.
+    Handles formats: [[price, size], ...], [price, ...], and dicts with price/size keys.
+    Validates price is in 1-99 cent range."""
     if not asks:
         return None
     first = asks[0]
-    if isinstance(first, list):
-        return int(first[0])
-    return int(first)
+    try:
+        if isinstance(first, dict):
+            raw = float(first.get("price", first.get("p", 0)))
+        elif isinstance(first, (list, tuple)):
+            raw = float(first[0])
+        else:
+            raw = float(first)
+        # Auto-detect dollars vs cents
+        if 0 < raw < 1:
+            raw = raw * 100
+        price = int(round(raw))
+        if price < 1 or price > 99:
+            return None
+        return price
+    except (ValueError, TypeError, IndexError):
+        return None
 
 
 def _depth_at_price(asks, price):
     """Get total depth (contracts) available at the best price."""
     total = 0
     for entry in asks:
-        if isinstance(entry, list):
-            if int(entry[0]) == price:
-                total += int(entry[1])
-            elif int(entry[0]) > price:
+        try:
+            if isinstance(entry, dict):
+                ep = int(float(entry.get("price", entry.get("p", 0))))
+                es = int(float(entry.get("size", entry.get("s", 0))))
+            elif isinstance(entry, (list, tuple)):
+                ep = int(float(entry[0]))
+                es = int(float(entry[1])) if len(entry) > 1 else 1
+            else:
                 break
-        else:
+            if 0 < ep < 1:
+                ep = int(round(ep * 100))
+            if ep == price:
+                total += es
+            elif ep > price:
+                break
+        except (ValueError, TypeError, IndexError):
             break
     return max(total, 1)
+
+
+def estimate_slippage(asks, contracts, best_price):
+    """Estimate average fill price when buying `contracts` into an orderbook.
+    Returns (avg_price_cents, max_price_cents) or (best_price, best_price) if depth unknown.
+
+    Slippage occurs when the order size exceeds liquidity at the best price,
+    requiring fills at worse price levels.
+    """
+    if not asks or contracts <= 0:
+        return best_price, best_price
+
+    remaining = contracts
+    total_cost = 0
+    max_fill_price = best_price
+
+    for entry in asks:
+        try:
+            if isinstance(entry, (list, tuple)):
+                price = int(float(entry[0]))
+                size = int(float(entry[1])) if len(entry) > 1 else 1
+            elif isinstance(entry, dict):
+                price = int(float(entry.get("price", 0)))
+                size = int(float(entry.get("size", 0)))
+            else:
+                break
+            if 0 < price < 1:
+                price = int(round(price * 100))
+        except (ValueError, TypeError, IndexError):
+            break
+
+        fill = min(remaining, size)
+        total_cost += fill * price
+        max_fill_price = price
+        remaining -= fill
+        if remaining <= 0:
+            break
+
+    filled = contracts - remaining
+    if filled == 0:
+        return best_price, best_price
+
+    avg_price = total_cost / filled
+    return round(avg_price, 1), max_fill_price
 
 
 def execute_cross_arb(kalshi_api, poly_api, opp, max_cost_dollars=10.0, dry_run=False):

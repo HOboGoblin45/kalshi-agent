@@ -159,3 +159,111 @@ User: "Scan all markets"
 → Debate on candidate 1: bull-bear spread 35% → forced HOLD
 → Debate on candidate 2: edge 4% < fee drag 7% → HOLD
 → Report: "No actionable opportunities this scan. Market prices are well-calibrated right now."
+
+## Polymarket Integration (v6)
+
+The agent supports dual-platform trading across Kalshi and Polymarket.
+
+### Polymarket Setup
+
+1. **Install dependencies:**
+   ```bash
+   pip install py-clob-client eth-account
+   ```
+
+2. **Configure credentials** in `kalshi-config.json` or via environment variables:
+   ```json
+   {
+     "polymarket_enabled": true,
+     "polymarket_private_key": "0x...",
+     "polymarket_funder": "0x..."
+   }
+   ```
+   Environment variable overrides: `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`, `POLYMARKET_FUNDER`.
+
+3. **Funder address**: Your Polymarket proxy wallet address. Find it at polymarket.com after depositing USDC.
+
+4. **API credentials**: If not provided, the agent derives them from your wallet signature automatically. You can also provide `polymarket_api_key`, `polymarket_api_secret`, `polymarket_api_passphrase` directly.
+
+5. **Read-only mode**: If no private key is configured, the agent uses Polymarket for market data only (price comparison, matching) without placing trades.
+
+### Cross-Platform Features
+
+- **Cross-platform arbitrage**: Finds markets listed on both platforms where YES@Kalshi + NO@Polymarket (or vice versa) costs less than $1.00 after fees. Guaranteed profit regardless of outcome.
+- **Best-price routing**: For directional trades, compares effective prices (price + fees) across both platforms and routes to the cheaper one.
+- **Quick-flip scalping**: Buys cheap contracts (3-15c) targeting 2x returns. Works on both platforms.
+
+### Fees
+
+- Kalshi: $0.07 per contract (taker fee)
+- Polymarket: ~2% on net winnings (approximated as $0.02 per contract)
+- Fees are factored into all arbitrage calculations, Kelly sizing, and price routing.
+
+## Strategy Toggles
+
+Individual strategies can be enabled/disabled in config:
+
+| Config Key | Default | Description |
+|---|---|---|
+| `debate_enabled` | true | AI Bull/Bear debate directional trades |
+| `within_arb_enabled` | true | Within-market YES+NO < $1 arbitrage |
+| `cross_arb_enabled` | true | Cross-platform arbitrage (requires Polymarket) |
+| `quickflip_enabled` | true | Quick-flip scalping on cheap contracts |
+| `polymarket_enabled` | false | Polymarket integration overall |
+| `compounding_enabled` | true | Dynamic bankroll tier sizing |
+
+## Configuration Tuning Guide
+
+### Risk Profiles
+
+**Conservative** (recommended for new users):
+```json
+{
+  "min_edge_pct": 8,
+  "min_confidence": 75,
+  "kelly_fraction": 0.15,
+  "max_bet_per_trade": 5.0,
+  "max_total_exposure": 20.0,
+  "max_daily_loss": 10.0
+}
+```
+
+**Moderate** (default):
+```json
+{
+  "min_edge_pct": 5,
+  "min_confidence": 65,
+  "kelly_fraction": 0.30,
+  "max_bet_per_trade": 8.0,
+  "max_total_exposure": 35.0,
+  "max_daily_loss": 15.0
+}
+```
+
+**Aggressive** (experienced users only):
+```json
+{
+  "min_edge_pct": 3,
+  "min_confidence": 55,
+  "kelly_fraction": 0.40,
+  "max_bet_per_trade": 15.0,
+  "max_total_exposure": 60.0,
+  "max_daily_loss": 25.0
+}
+```
+
+### Key Parameters Explained
+
+| Parameter | What it does | Impact |
+|---|---|---|
+| `min_edge_pct` | Minimum edge over market price to trade | Higher = fewer but higher-quality trades |
+| `min_confidence` | Minimum debate confidence to trade | Higher = more selective |
+| `kelly_fraction` | Fraction of full Kelly bet (0.30 = 30%) | Lower = less variance, slower growth |
+| `max_bet_per_trade` | Maximum cost per single trade | Caps worst-case loss per trade |
+| `max_total_exposure` | Maximum total capital at risk | Hard cap on total open positions |
+| `max_daily_loss` | Circuit breaker: stop trading if daily loss exceeds this | Prevents tilt/runaway losses |
+| `scan_interval_minutes` | How often to scan for arb (minutes) | Lower = more responsive, more API calls |
+| `ai_scan_interval_multiplier` | AI debate runs every N scans | Higher = fewer Claude API calls, less cost |
+| `exit_loss_pct` | Stop-loss threshold (% loss) | Lower = tighter stops, more frequent exits |
+| `exit_profit_pct` | Take-profit threshold (% gain) | Lower = locks in profits sooner |
+| `exit_time_hours` | Max hold time before forced exit | Prevents capital lock-up |
