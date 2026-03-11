@@ -54,8 +54,9 @@ DEFAULTS={
     "kalshi_api_key_id":"","kalshi_private_key_path":"","anthropic_api_key":"",
     "environment":"prod",
     "scan_interval_minutes":3,
+    "ai_scan_interval_multiplier":5,  # AI debate runs every N scans (e.g., 5 = every 15min at 3min scans)
     "markets_per_scan":40,
-    "deep_dive_top_n":3,
+    "deep_dive_top_n":2,
     "market_cache_minutes":15,
     "target_keywords":["fed","fomc","interest rate","inflation","cpi","pce","gdp","recession",
         "unemployment","jobs","nonfarm","payroll","treasury","yield","mortgage","gas price",
@@ -1373,32 +1374,44 @@ def get_dynamic_kelly(base_fraction, win_streak=0, loss_cooldown=0):
 # WITHIN-MARKET ARBITRAGE SCANNER
 # (No AI needed -- pure math)
 # ════════════════════════════════════════
-def scan_arbitrage(api, markets):
+def scan_arbitrage(api, markets, ob_cache=None):
     """
     Check for markets where YES+NO orderbook best bids sum to < 100.
     Buying YES and NO guarantees $1 payout for less than $1 cost = riskless profit.
     This is the only TRUE arbitrage -- everything else is probabilistic.
+
+    ob_cache: optional dict of ticker -> (timestamp, yes_price, no_price) to skip
+              markets whose orderbook prices haven't changed since last scan.
     """
     opportunities = []
+    skipped = 0
     # Sample markets with decent volume
     candidates = [m for m in markets if (m.get("volume",0) or 0) >= 50][:100]
     for m in candidates:
         try:
             ob = api.orderbook(m["ticker"])
             book = ob.get("orderbook",{})
-            # Get best YES and NO ask prices (what we'd pay)
-            # In Kalshi's binary market: YES bid at X means you can buy YES at X
-            # NO bid at Y means you can buy NO at Y
-            # If X + Y < 100 cents, buying both = guaranteed profit
             yes_bids = book.get("yes", book.get("yes_dollars",[]))
             no_bids = book.get("no", book.get("no_dollars",[]))
             if not yes_bids or not no_bids: continue
-            # Best (highest) bid = cheapest entry for each side
             raw_yes = yes_bids[0][0] if isinstance(yes_bids[0],list) else yes_bids[0]
             raw_no = no_bids[0][0] if isinstance(no_bids[0],list) else no_bids[0]
             best_yes = parse_orderbook_price(raw_yes)
             best_no = parse_orderbook_price(raw_no)
             if best_yes is None or best_no is None: continue
+
+            # Skip if prices unchanged since last scan (saves processing time)
+            if ob_cache is not None:
+                tk = m["ticker"]
+                cached = ob_cache.get(tk)
+                now = time.time()
+                if cached:
+                    ts, old_yes, old_no = cached
+                    if now - ts < 180 and old_yes == best_yes and old_no == best_no:
+                        skipped += 1
+                        continue  # Prices unchanged, skip
+                ob_cache[tk] = (now, best_yes, best_no)
+
             total_cost = best_yes + best_no
             fee_cost = CFG["taker_fee_per_contract"] * 2 * 100  # 2 contracts, convert to cents
             if total_cost + fee_cost < 100:
@@ -1412,6 +1425,7 @@ def scan_arbitrage(api, markets):
         except Exception:
             continue
         time.sleep(0.1)  # Rate limit
+    if skipped: log.debug(f"  Arb scan: skipped {skipped} unchanged orderbooks")
     opportunities.sort(key=lambda x: x["profit_cents"], reverse=True)
     return opportunities
 
@@ -2075,7 +2089,7 @@ b.className='tb '+(d.enabled?'on':'off');l.textContent=d.enabled?'ON':'OFF';
 document.getElementById('pB').style.display=d.risk.paused?'block':'none';
 document.getElementById('dB').style.display=d.dry_run?'block':'none';
 const polyTag=d.poly_enabled?' | Polymarket: ON':'';
-document.getElementById('ft').textContent='Last: '+d.last_scan+' | Next: '+d.next_scan+' | Every '+d.scan_interval+'m | v6 Cross-Platform'+polyTag;
+document.getElementById('ft').textContent='Last: '+d.last_scan+' | Next: '+d.next_scan+' | Arb: '+d.scan_interval+'m | AI: '+(d.ai_interval||15)+'m | v6 Cross-Platform'+polyTag;
 const tb=document.getElementById('tbl');
 if(d.trades&&d.trades.length){tb.innerHTML=d.trades.slice().reverse().slice(0,20).map(t=>{
 const sc=t.side==='yes'?'yes':'no';
@@ -2116,7 +2130,9 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
             "environment":CFG["environment"].upper(),"risk":risk,"trades":SHARED.get("_trades",[])[-20:],
             "log":SHARED["log_lines"][-100:],"last_scan":SHARED["last_scan"],"next_scan":SHARED["next_scan"],
             "dry_run":SHARED["dry_run"],"max_daily":CFG["max_daily_trades"],"scan_count":SHARED["scan_count"],
-            "scan_interval":CFG["scan_interval_minutes"],"arb_opps":SHARED["_arb_opportunities"],
+            "scan_interval":CFG["scan_interval_minutes"],
+            "ai_interval":CFG["scan_interval_minutes"]*CFG.get("ai_scan_interval_multiplier",5),
+            "arb_opps":SHARED["_arb_opportunities"],
             "cross_arb_opps":SHARED.get("_cross_arb_opportunities",0),
             "quickflip_active":SHARED.get("_quickflip_active",0)}
     def log_message(self,*a): pass
@@ -2145,6 +2161,8 @@ class Agent:
         self.poly_api = None; self.poly_cache = None
         self.cross_platform_matches = []
         self.win_streak = 0; self.loss_cooldown = 0
+        self._scan_number = 0  # Tracks scans for AI phase scheduling
+        self._last_orderbook_cache = {}  # ticker -> (timestamp, yes_price, no_price)
         if self.poly_enabled:
             try:
                 self.poly_api = PolymarketAPI()
@@ -2155,11 +2173,19 @@ class Agent:
                 log.error(f"Polymarket init failed: {e} -- running Kalshi-only")
                 self.poly_enabled = False
 
+    def _is_ai_scan_due(self):
+        """AI debate runs every N scans to save Claude credits. Arb phases run every scan."""
+        mult = CFG.get("ai_scan_interval_multiplier", 5)
+        return self._scan_number % mult == 0
+
     def scan(self):
         if not SHARED["enabled"]:
             SHARED["status"]="Disabled"; return
+        self._scan_number += 1
+        ai_due = self._is_ai_scan_due()
+        scan_type = "FULL (arb + AI)" if ai_due else "FAST (arb only)"
         SHARED["status"]="Scanning..."
-        log.info("="*50); log.info("SCAN START (v6 -- Cross-Platform)")
+        log.info("="*50); log.info(f"SCAN #{self._scan_number} ({scan_type})")
 
         # ── BALANCE CHECK (both platforms) ──
         bal=self.api.balance(); SHARED["balance"]=bal
@@ -2281,7 +2307,7 @@ class Agent:
         # PHASE 2: WITHIN-MARKET ARBITRAGE (fast, no AI)
         # ══════════════════════════════════════
         log.info("Phase 2: Within-market arbitrage scan...")
-        arb_opps = scan_arbitrage(self.api, mkts)
+        arb_opps = scan_arbitrage(self.api, mkts, ob_cache=self._last_orderbook_cache)
         SHARED["_arb_opportunities"] = len(arb_opps) + SHARED.get("_cross_arb_opportunities", 0)
         if arb_opps:
             for a in arb_opps[:3]:
@@ -2344,7 +2370,12 @@ class Agent:
 
         # ══════════════════════════════════════
         # PHASE 4: AI-DRIVEN DIRECTIONAL TRADING (heavy AI)
+        # Runs every ai_scan_interval_multiplier scans to save Claude credits
         # ══════════════════════════════════════
+        if not ai_due:
+            log.info(f"Phase 4: SKIPPED (next AI scan in {CFG.get('ai_scan_interval_multiplier', 5) - (self._scan_number % CFG.get('ai_scan_interval_multiplier', 5))} scans)")
+            self._finish_scan(bal, poly_bal)
+            return
         log.info("Phase 4: AI directional trading...")
         short_term, long_term = filter_and_rank(mkts)
         log.info(f"Short-term (<{CFG['max_close_hours']}h): {len(short_term)} | Long-term: {len(long_term)}")
@@ -2566,7 +2597,8 @@ class Agent:
 
     def run(self):
         iv=CFG["scan_interval_minutes"]*60
-        log.info(f"Agent running. Scan every {CFG['scan_interval_minutes']}m. Ctrl+C to stop.")
+        ai_iv = iv * CFG.get("ai_scan_interval_multiplier", 5)
+        log.info(f"Agent running. Arb scan every {CFG['scan_interval_minutes']}m, AI debate every {ai_iv//60}m. Ctrl+C to stop.")
         SHARED["status"]="Idle"
 
         # Start background threads

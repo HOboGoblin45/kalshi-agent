@@ -28,8 +28,9 @@
     "compounding_enabled": true,
 
     "scan_interval_minutes": 3,
+    "ai_scan_interval_multiplier": 5,
     "markets_per_scan": 40,
-    "deep_dive_top_n": 3,
+    "deep_dive_top_n": 2,
     "market_cache_minutes": 12,
     "max_close_hours": 72,
     "cant_miss_edge_pct": 8,
