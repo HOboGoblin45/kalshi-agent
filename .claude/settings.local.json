@@ -7,7 +7,10 @@
       "mcp__Claude_Preview__preview_start",
       "Bash(timeout 30)",
       "Bash(\"C:\\\\Users\\\\ccres\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\python.exe\" -X utf8 -c \":*)",
-      "Bash(\"C:\\\\Users\\\\ccres\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\python.exe\" -c \"print\\(''°''.encode\\(''cp1252''\\)\\)\")"
+      "Bash(\"C:\\\\Users\\\\ccres\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Python313\\\\python.exe\" -c \"print\\(''°''.encode\\(''cp1252''\\)\\)\")",
+      "Bash(python kalshi-agent.py --config kalshi-config.json --dry-run)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)"
     ]
   }
 }
