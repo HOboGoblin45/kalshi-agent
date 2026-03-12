@@ -53,7 +53,7 @@ tr:hover td{background:#0f1520}
 <div class="rt"><span class="env" id="env">--</span><span class="bal" id="bal">$0.00</span>
 <div class="tw"><span class="tl" id="tL">ON</span><button class="tb on" id="tB" onclick="toggle()"></button></div></div></div>
 <div class="main">
-<div id="dB" class="dry" style="display:none">DRY RUN -- scanning only</div>
+
 <div id="pB" class="paused" style="display:none">PAUSED -- daily loss limit</div>
 <div class="cards">
 <div class="card"><div class="cl">Status</div><div class="cv gold" id="cS">--</div></div>
@@ -95,7 +95,7 @@ document.getElementById('cCA').textContent=d.cross_arb_opps||0;
 const b=document.getElementById('tB'),l=document.getElementById('tL');
 b.className='tb '+(d.enabled?'on':'off');l.textContent=d.enabled?'ON':'OFF';
 document.getElementById('pB').style.display=d.risk.paused?'block':'none';
-document.getElementById('dB').style.display=d.dry_run?'block':'none';
+
 const polyTag=d.poly_enabled?' | Polymarket: ON':'';
 document.getElementById('ft').textContent='Last: '+d.last_scan+' | Next: '+d.next_scan+' | Arb: '+d.scan_interval+'m | AI: '+(d.ai_interval||15)+'m | v6 Cross-Platform'+polyTag;
 const tb=document.getElementById('tbl');
@@ -114,9 +114,22 @@ setInterval(poll,3000);poll();
 
 
 class DashHandler(http.server.BaseHTTPRequestHandler):
+    def _cors(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
+
     def do_GET(self):
         if self.path == '/': self._html(DASHBOARD_HTML)
         elif self.path == '/api/state': self._json(self._state())
+        elif self.path == '/api/markets': self._json(self._markets())
+        elif self.path == '/api/positions': self._json(self._positions())
+        elif self.path == '/api/trades': self._json(self._trades())
         else: self.send_response(404); self.end_headers()
 
     def do_POST(self):
@@ -134,7 +147,9 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
 
     def _json(self, obj):
         d = json.dumps(obj, default=str).encode(); self.send_response(200)
-        self.send_header("Content-Type", "application/json"); self.end_headers(); self.wfile.write(d)
+        self.send_header("Content-Type", "application/json")
+        self._cors()
+        self.end_headers(); self.wfile.write(d)
 
     def _state(self):
         risk = SHARED.get("_risk_summary", {"total": 0, "wins": 0, "losses": 0, "win_rate": "--",
@@ -143,12 +158,21 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
             "poly_balance": SHARED.get("poly_balance", 0), "poly_enabled": SHARED.get("poly_enabled", False),
             "environment": CFG["environment"].upper(), "risk": risk, "trades": SHARED.get("_trades", [])[-20:],
             "log": SHARED["log_lines"][-100:], "last_scan": SHARED["last_scan"], "next_scan": SHARED["next_scan"],
-            "dry_run": SHARED["dry_run"], "max_daily": CFG["max_daily_trades"], "scan_count": SHARED["scan_count"],
+            "max_daily": CFG["max_daily_trades"], "scan_count": SHARED["scan_count"],
             "scan_interval": CFG["scan_interval_minutes"],
             "ai_interval": CFG["scan_interval_minutes"] * CFG.get("ai_scan_interval_multiplier", 5),
             "arb_opps": SHARED["_arb_opportunities"],
             "cross_arb_opps": SHARED.get("_cross_arb_opportunities", 0),
             "quickflip_active": SHARED.get("_quickflip_active", 0)}
+
+    def _markets(self):
+        return SHARED.get("_cached_markets", [])
+
+    def _positions(self):
+        return SHARED.get("_positions", [])
+
+    def _trades(self):
+        return SHARED.get("_trades", [])
 
     def log_message(self, *a): pass
 
