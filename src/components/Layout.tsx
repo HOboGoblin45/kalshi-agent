@@ -6,6 +6,8 @@ import {
   Bell,
   User,
   Settings,
+  Loader2,
+  AlertCircle,
 } from "lucide-react";
 import { useStore } from "../store/useStore";
 
@@ -18,14 +20,6 @@ const navItems = [
 ];
 
 function Sidebar() {
-  const unread = useStore((s) => s.alerts.filter((a) => !a.read).length);
-  const displayName = useStore((s) => s.settings.displayName);
-  const initials = displayName
-    .split(" ")
-    .map((w) => w[0])
-    .join("")
-    .toUpperCase();
-
   return (
     <aside className="hidden md:flex flex-col w-[220px] h-full bg-bg-surface border-r border-border-subtle shrink-0">
       <div className="p-4 flex items-center gap-2">
@@ -51,11 +45,6 @@ function Sidebar() {
           >
             <item.icon size={18} />
             <span>{item.label}</span>
-            {item.to === "/alerts" && unread > 0 && (
-              <span className="ml-auto bg-accent-red text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                {unread}
-              </span>
-            )}
           </NavLink>
         ))}
       </nav>
@@ -63,14 +52,14 @@ function Sidebar() {
       <div className="p-4 border-t border-border-subtle">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 rounded-full bg-accent-blue flex items-center justify-center text-sm font-bold">
-            {initials}
+            KA
           </div>
           <div className="flex-1 min-w-0">
             <p className="text-sm font-medium text-text-primary truncate">
-              {displayName}
+              Kalshi Agent
             </p>
             <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-accent-gold/15 text-accent-gold">
-              PRO
+              LIVE
             </span>
           </div>
           <NavLink to="/profile" className="text-text-tertiary hover:text-text-primary">
@@ -83,8 +72,6 @@ function Sidebar() {
 }
 
 function MobileTabBar() {
-  const unread = useStore((s) => s.alerts.filter((a) => !a.read).length);
-
   return (
     <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 glass border-t border-border-subtle flex items-center justify-around h-16 px-2">
       {navItems.map((item) => (
@@ -98,14 +85,7 @@ function MobileTabBar() {
             }`
           }
         >
-          <div className="relative">
-            <item.icon size={20} />
-            {item.to === "/alerts" && unread > 0 && (
-              <span className="absolute -top-1 -right-2 bg-accent-red text-white text-[8px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
-                {unread}
-              </span>
-            )}
-          </div>
+          <item.icon size={20} />
           <span>{item.label.split(" ")[0]}</span>
         </NavLink>
       ))}
@@ -114,9 +94,8 @@ function MobileTabBar() {
 }
 
 function TopBar() {
-  const balance = useStore((s) => s.portfolio.balance);
-  const unread = useStore((s) => s.alerts.filter((a) => !a.read).length);
-  const location = useLocation();
+  const agentState = useStore((s) => s.agentState);
+  const balance = agentState ? agentState.balance + (agentState.poly_balance || 0) : 0;
 
   return (
     <header className="h-14 shrink-0 flex items-center justify-between px-4 md:px-6 border-b border-border-subtle bg-bg-surface/80 backdrop-blur-xl sticky top-0 z-30">
@@ -128,23 +107,54 @@ function TopBar() {
       </div>
       <div className="hidden md:block" />
       <div className="flex items-center gap-4">
+        {agentState && (
+          <div className="flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full ${agentState.enabled ? "bg-accent-green pulse-green" : "bg-accent-red"}`} />
+            <span className="text-xs text-text-secondary">{agentState.status}</span>
+          </div>
+        )}
         <span className="font-mono text-sm font-semibold text-text-primary">
-          ${balance.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+          ${balance.toFixed(2)}
         </span>
-        <NavLink to="/alerts" className="relative text-text-secondary hover:text-text-primary">
-          <Bell size={20} />
-          {unread > 0 && (
-            <span className="absolute -top-1 -right-1 bg-accent-red text-white text-[8px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
-              {unread}
-            </span>
-          )}
-        </NavLink>
       </div>
     </header>
   );
 }
 
+function LoadingScreen() {
+  return (
+    <div className="flex items-center justify-center h-screen bg-bg-base">
+      <div className="text-center">
+        <Loader2 size={32} className="mx-auto text-accent-blue animate-spin mb-4" />
+        <p className="text-text-secondary text-sm">Connecting to agent...</p>
+      </div>
+    </div>
+  );
+}
+
+function ErrorScreen({ error }: { error: string }) {
+  return (
+    <div className="flex items-center justify-center h-screen bg-bg-base">
+      <div className="text-center max-w-sm">
+        <AlertCircle size={32} className="mx-auto text-accent-red mb-4" />
+        <p className="text-text-primary font-semibold mb-2">Agent Not Running</p>
+        <p className="text-text-secondary text-sm mb-4">{error}</p>
+        <p className="text-text-tertiary text-xs">
+          Start the agent with: <code className="bg-bg-elevated px-2 py-1 rounded">python kalshi-agent.py --config kalshi-config.json</code>
+        </p>
+      </div>
+    </div>
+  );
+}
+
 export default function Layout() {
+  const loading = useStore((s) => s.loading);
+  const error = useStore((s) => s.error);
+  const agentState = useStore((s) => s.agentState);
+
+  if (loading && !agentState) return <LoadingScreen />;
+  if (error && !agentState) return <ErrorScreen error={error} />;
+
   return (
     <div className="flex h-screen bg-bg-base text-text-primary">
       <Sidebar />

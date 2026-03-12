@@ -18,7 +18,7 @@ Key innovations over v5:
 - Calibration tracking (log predictions to measure accuracy over time)
 
   python kalshi-agent.py --config kalshi-config.json
-  python kalshi-agent.py --config kalshi-config.json --dry-run
+  python kalshi-agent.py --config kalshi-config.json
 """
 import os, sys, json, time, datetime, argparse, traceback, threading
 
@@ -42,8 +42,8 @@ from modules.dashboard import start_dashboard
 # AGENT
 # ════════════════════════════════════════
 class Agent:
-    def __init__(self, dry=False):
-        self.dry = dry; SHARED["dry_run"] = dry
+    def __init__(self):
+        self.dry = False; SHARED["dry_run"] = False
         self.api = KalshiAPI(); self.debate = DebateEngine()
         self.risk = RiskMgr(); self.cache = MarketCache(self.api)
         self.data = DataFetcher()
@@ -119,6 +119,14 @@ class Agent:
 
         # ── LOAD MARKETS ──
         mkts = self.cache.get()
+        # Store markets for frontend API
+        with SHARED_LOCK:
+            SHARED["_cached_markets"] = [
+                {k: m.get(k) for k in ["ticker", "title", "subtitle", "category", "yes_bid", "no_bid",
+                 "last_price", "volume", "volume_24h", "close_time", "status", "event_ticker",
+                 "yes_ask", "no_ask", "open_time", "result", "platform"]}
+                for m in mkts[:100]
+            ]
         poly_mkts = []
         if self.poly_enabled and self.poly_cache:
             try:
@@ -173,8 +181,7 @@ class Agent:
                 if cross_arbs:
                     for ca in cross_arbs[:3]:
                         log.info(f"  CROSS-ARB: {ca['title'][:40]} -- {ca['strategy_desc']} -- profit: {ca['profit_cents']:.1f}c")
-                        if not self.dry:
-                            try:
+                        try:
                                 result = execute_cross_arb(self.api, self.poly_api, ca,
                                     max_cost=CFG.get("cross_arb_max_cost", 10.0), dry_run=False)
                                 if result["success"]:
@@ -193,7 +200,7 @@ class Agent:
                                         f"Cross-arb Leg 2 failed!\nMarket: {ca['title']}\n"
                                         f"Kalshi leg filled but Polymarket leg FAILED.\n"
                                         f"Manual intervention may be needed.")
-                            except Exception as ex:
+                        except Exception as ex:
                                 log.error(f"  Cross-arb execution failed: {ex}")
                 else:
                     log.info("  No cross-platform arbitrage found")
@@ -213,8 +220,7 @@ class Agent:
         if arb_opps:
             for a in arb_opps[:3]:
                 log.info(f"  ARB: {a['ticker']} -- yes:{a['yes_price']:.0f}c + no:{a['no_price']:.0f}c = {a['total_cost']:.0f}c -- profit: {a['profit_cents']:.1f}c")
-                if not self.dry:
-                    try:
+                try:
                         self.api.place_order(a["ticker"], "yes", 1, int(a["yes_price"]))
                         self.api.place_order(a["ticker"], "no", 1, int(a["no_price"]))
                         log.info(f"  ARB EXECUTED: {a['ticker']}")
@@ -242,7 +248,7 @@ class Agent:
                         m = qf["market"]
                         log.info(f"  QF: {m.get('title', '')[:40]} -- {qf['side']} @{qf['entry_price']}c target:{qf['target_price']}c ROI:{qf['potential_roi']:.0f}%")
                         qf_max = CFG.get("quickflip_max_bet", 3.0)
-                        if not self.dry and qf_max > 0:
+                        if qf_max > 0:
                             try:
                                 qf_contracts = max(1, int(qf_max / (qf["entry_price"] / 100)))
                                 platform = qf.get("platform", "kalshi")
@@ -294,9 +300,12 @@ class Agent:
 
         existing = set()
         try:
-            for p in self.api.positions():
+            pos_list = self.api.positions()
+            for p in pos_list:
                 tk = p.get("ticker", p.get("market_ticker", ""))
                 if tk: existing.add(tk)
+            with SHARED_LOCK:
+                SHARED["_positions"] = pos_list
         except Exception as e:
             log.debug(f"Could not load existing positions: {e}")
         existing.update(self.risk.traded_tickers)
@@ -456,10 +465,6 @@ class Agent:
                 log.info(f"  -> SKIP: edge {r['edge']}% too small vs spread {ob_spread}c")
                 continue
 
-            if self.dry:
-                log.info(f"  * DRY RUN: {r['side']} {contracts}x @{bp}c (${cost:.2f}) [{cat}] on {trade_platform}")
-                continue
-
             log.info(f"  * EXECUTE: BUY {r['side'].upper()} {contracts}x {tk} @{bp}c [{cat}] on {trade_platform.upper()}")
             try:
                 if trade_platform == "kalshi":
@@ -528,7 +533,7 @@ class Agent:
 
 def main():
     ap = argparse.ArgumentParser(description="Kalshi AI Agent v6 -- Cross-Platform Arbitrage")
-    ap.add_argument("--config", type=str); ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--config", type=str)
     ap.add_argument("--scan-once", action="store_true"); ap.add_argument("--no-dashboard", action="store_true")
     ap.add_argument("--report", action="store_true", help="Generate performance report and exit")
     args = ap.parse_args()
@@ -550,7 +555,7 @@ def main():
         if val: CFG[cfg_key] = val
     if not CFG["kalshi_api_key_id"] or not CFG["anthropic_api_key"]:
         print("\n  Error: --config with API keys required (or set KALSHI_API_KEY_ID / ANTHROPIC_API_KEY env vars)\n"); sys.exit(1)
-    a = Agent(dry=args.dry_run)
+    a = Agent()
     try:
         if args.report:
             report = a.reporter.generate_report()

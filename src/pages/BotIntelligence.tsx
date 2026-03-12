@@ -1,93 +1,60 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Mic, Star, AlertTriangle, Sparkles } from "lucide-react";
+import { Send } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useStore } from "../store/useStore";
-import { markets } from "../data/markets";
-import MarketCard from "../components/MarketCard";
-import Modal from "../components/Modal";
-import { useToast } from "../components/Toast";
 import type { ChatMessage } from "../store/useStore";
 
-const suggestedPrompts = [
-  "What should I trade today?",
-  "Biggest opportunities",
-  "Explain my P&L",
-];
+function getBotResponse(text: string, agentState: ReturnType<typeof useStore.getState>["agentState"]): string {
+  const s = agentState;
+  if (!s) return "Agent is not connected. Start the agent first.";
 
-const insightCards = [
-  {
-    icon: Star,
-    title: "Top Pick Today",
-    short: "Fed Rate Cut — 72¢ YES, +8% edge",
-    detail:
-      "The Fed Rate Cut market is currently priced at 72¢ YES, but our models estimate an 80% probability of a cut at the June FOMC meeting. Recent economic data supports this view with inflation cooling and employment softening. This represents an 8% edge opportunity with high conviction.",
-  },
-  {
-    icon: AlertTriangle,
-    title: "Risk Alert",
-    short: "Bitcoin volatility spike expected",
-    detail:
-      "Bitcoin options markets are pricing in elevated volatility ahead of the halving anniversary. Our models detect increased correlation between BTC price and the Bitcoin $100K prediction market. Consider reducing position size or adding hedges if you hold YES contracts.",
-  },
-  {
-    icon: Sparkles,
-    title: "Market Prediction",
-    short: "S&P 500 ATH likely by end of Q2",
-    detail:
-      "Based on historical patterns and current earnings momentum, our model assigns an 88% probability to the S&P 500 hitting a new all-time high before June 30. The market is pricing this at 81¢, suggesting a 7% edge. Institutional flows remain supportive.",
-  },
-];
-
-function getBotResponse(text: string): { text: string; marketCards?: string[] } {
   const lower = text.toLowerCase();
+  const balance = s.balance + (s.poly_balance || 0);
+
+  if (lower.includes("status") || lower.includes("how") || lower.includes("running")) {
+    return `Agent is ${s.enabled ? "ENABLED" : "DISABLED"}. Status: ${s.status}. Balance: $${balance.toFixed(2)}. Scans completed: ${s.scan_count}. Win rate: ${s.risk.win_rate}. Today P&L: ${s.risk.day_pnl}.`;
+  }
   if (lower.includes("trade") || lower.includes("should i") || lower.includes("top pick")) {
-    return {
-      text: "Based on my analysis, the Fed Rate Cut market is your best opportunity right now. I'm seeing an 8% edge — the market is pricing YES at 72¢ but my models put the probability at 80%. Here's the market:",
-      marketCards: ["fed-rate-june"],
-    };
+    const trades = s.trades;
+    if (trades.length === 0) return "No trades have been placed yet. The agent is scanning markets and will trade when it finds opportunities with edge.";
+    const last = trades[trades.length - 1];
+    return `Last trade: ${last.side.toUpperCase()} ${last.contracts}x ${last.title || last.ticker} @${last.price_cents}¢ (edge: ${last.edge}%, confidence: ${last.confidence}%). Total trades today: ${s.risk.day_trades}.`;
   }
   if (lower.includes("p&l") || lower.includes("profit") || lower.includes("performance")) {
-    return {
-      text: "Here's your P&L summary: You're up $2,847.21 today (+2.28%). Your portfolio is valued at $127,849.32 with a balance of $12,450.00. Your win rate stands at 68% across 142 total trades. Your best performer today is the Fed Rate Cut position (+$1,050).",
-    };
+    return `Today P&L: ${s.risk.day_pnl}. Win rate: ${s.risk.win_rate}. Total trades: ${s.risk.total}. Exposure: ${s.risk.exposure}. Balance: $${balance.toFixed(2)}.`;
   }
-  if (lower.includes("opportunit") || lower.includes("biggest")) {
-    return {
-      text: "I've identified two high-conviction opportunities for you right now. Both show significant edges between my model probability and market price:",
-      marketCards: ["fed-rate-june", "sp500-ath-q2"],
-    };
+  if (lower.includes("balance") || lower.includes("money")) {
+    return `Kalshi balance: $${s.balance.toFixed(2)}. Polymarket: $${(s.poly_balance || 0).toFixed(2)}. Combined: $${balance.toFixed(2)}.`;
   }
-  return {
-    text: "I've analyzed the current market landscape. There are 847 active markets being tracked, with 3 high-conviction signals right now. The political markets are seeing increased volume ahead of midterm positioning, and weather derivatives are showing unusual activity due to updated NOAA forecasts. Want me to dive deeper into any sector?",
-  };
+  if (lower.includes("scan") || lower.includes("market")) {
+    return `${s.scan_count} scans completed. Arb scan every ${s.scan_interval}m, AI debate every ${s.ai_interval}m. Found ${s.arb_opps} arbitrage opportunities. Status: ${s.status}.`;
+  }
+  return `Agent status: ${s.status}. Balance: $${balance.toFixed(2)}. ${s.scan_count} scans done. ${s.risk.day_trades} trades today. Ask me about trades, P&L, balance, or scan status.`;
 }
 
 export default function BotIntelligence() {
-  const { portfolio, botStatus, chatMessages, addChatMessage, setRiskMode } = useStore();
+  const agentState = useStore((s) => s.agentState);
+  const { chatMessages, addChatMessage } = useStore();
   const [input, setInput] = useState("");
   const [typing, setTyping] = useState(false);
-  const [insightModal, setInsightModal] = useState<number | null>(null);
-  const [scanCount, setScanCount] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const { toast } = useToast();
-
-  useEffect(() => {
-    let count = 0;
-    const interval = setInterval(() => {
-      count += Math.floor(Math.random() * 40) + 10;
-      if (count >= botStatus.marketsScanned) {
-        setScanCount(botStatus.marketsScanned);
-        clearInterval(interval);
-      } else {
-        setScanCount(count);
-      }
-    }, 50);
-    return () => clearInterval(interval);
-  }, [botStatus.marketsScanned]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [chatMessages, typing]);
+
+  // Initial welcome message
+  useEffect(() => {
+    if (chatMessages.length === 0 && agentState) {
+      const balance = agentState.balance + (agentState.poly_balance || 0);
+      addChatMessage({
+        id: "welcome",
+        sender: "bot",
+        text: `Agent is ${agentState.enabled ? "running" : "paused"}. Balance: $${balance.toFixed(2)}. Status: ${agentState.status}. Ask me anything about trades, P&L, or market scans.`,
+        timestamp: Date.now(),
+      });
+    }
+  }, [agentState, chatMessages.length, addChatMessage]);
 
   const sendMessage = useCallback(
     (text: string) => {
@@ -103,22 +70,25 @@ export default function BotIntelligence() {
       setTyping(true);
 
       setTimeout(() => {
-        const response = getBotResponse(text);
+        const response = getBotResponse(text, agentState);
         const botMsg: ChatMessage = {
           id: `b-${Date.now()}`,
           sender: "bot",
-          text: response.text,
-          marketCards: response.marketCards,
+          text: response,
           timestamp: Date.now(),
         };
         addChatMessage(botMsg);
         setTyping(false);
-      }, 800);
+      }, 400);
     },
-    [addChatMessage]
+    [addChatMessage, agentState]
   );
 
-  const riskModes = ["Conservative", "Balanced", "Aggressive"] as const;
+  const suggestedPrompts = [
+    "What's the agent status?",
+    "Show recent trades",
+    "What's my P&L?",
+  ];
 
   return (
     <div className="flex flex-col h-full">
@@ -126,66 +96,27 @@ export default function BotIntelligence() {
         {/* Status card */}
         <div className="card flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-accent-green pulse-green" />
+            <span className={`w-2 h-2 rounded-full ${agentState?.enabled ? "bg-accent-green pulse-green" : "bg-accent-red"}`} />
             <span className="text-sm text-text-secondary">
-              Scanning <span className="font-mono text-text-primary font-semibold">{scanCount}</span> markets
+              {agentState?.status || "Connecting..."}
             </span>
           </div>
-          <div className="flex items-center gap-6 text-sm">
-            <div>
-              <span className="text-text-secondary">Win Rate </span>
-              <span className="font-mono font-semibold">{portfolio.winRate}%</span>
-            </div>
-            <div>
-              <span className="text-text-secondary">P&L </span>
-              <span className="font-mono font-semibold text-accent-green">
-                +${portfolio.todayPnl.toLocaleString()}
-              </span>
-            </div>
-            <div>
-              <span className="text-text-secondary">Trades </span>
-              <span className="font-mono font-semibold">{portfolio.totalTrades}</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Risk mode selector */}
-        <div className="flex bg-bg-surface rounded-xl p-1 border border-border-subtle">
-          {riskModes.map((mode) => (
-            <button
-              key={mode}
-              onClick={() => setRiskMode(mode)}
-              className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all ${
-                botStatus.riskMode === mode
-                  ? "text-white shadow"
-                  : "text-text-secondary hover:text-text-primary"
-              }`}
-              style={
-                botStatus.riskMode === mode
-                  ? { background: "var(--accent-color)" }
-                  : undefined
-              }
-            >
-              {mode}
-            </button>
-          ))}
-        </div>
-
-        {/* AI Insight Strip */}
-        <div className="flex gap-3 overflow-x-auto pb-1 scrollbar-none">
-          {insightCards.map((card, i) => (
-            <button
-              key={i}
-              onClick={() => setInsightModal(i)}
-              className="card shrink-0 w-60 text-left hover:border-white/15 transition-colors"
-            >
-              <div className="flex items-center gap-2 mb-2">
-                <card.icon size={16} className="text-accent-gold" />
-                <span className="text-xs font-semibold text-accent-gold">{card.title}</span>
+          {agentState && (
+            <div className="flex items-center gap-6 text-sm">
+              <div>
+                <span className="text-text-secondary">Win Rate </span>
+                <span className="font-mono font-semibold">{agentState.risk.win_rate}</span>
               </div>
-              <p className="text-sm text-text-primary">{card.short}</p>
-            </button>
-          ))}
+              <div>
+                <span className="text-text-secondary">P&L </span>
+                <span className="font-mono font-semibold">{agentState.risk.day_pnl}</span>
+              </div>
+              <div>
+                <span className="text-text-secondary">Scans </span>
+                <span className="font-mono font-semibold">{agentState.scan_count}</span>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -199,31 +130,20 @@ export default function BotIntelligence() {
                   K
                 </div>
               )}
-              <div>
-                <div
-                  className={`px-4 py-3 rounded-2xl text-sm ${
-                    msg.sender === "user"
-                      ? "text-white rounded-br-md"
-                      : "bg-bg-elevated text-text-primary rounded-bl-md"
-                  }`}
-                  style={msg.sender === "user" ? { background: "var(--accent-color)" } : undefined}
-                >
-                  {msg.text}
-                </div>
-                {msg.marketCards && (
-                  <div className="mt-2 space-y-2">
-                    {msg.marketCards.map((id) => {
-                      const m = markets.find((x) => x.id === id);
-                      return m ? <MarketCard key={id} market={m} compact /> : null;
-                    })}
-                  </div>
-                )}
+              <div
+                className={`px-4 py-3 rounded-2xl text-sm ${
+                  msg.sender === "user"
+                    ? "text-white rounded-br-md"
+                    : "bg-bg-elevated text-text-primary rounded-bl-md"
+                }`}
+                style={msg.sender === "user" ? { background: "var(--accent-color)" } : undefined}
+              >
+                {msg.text}
               </div>
             </div>
           </div>
         ))}
 
-        {/* Typing indicator */}
         <AnimatePresence>
           {typing && (
             <motion.div
@@ -266,15 +186,9 @@ export default function BotIntelligence() {
           ))}
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => toast("Voice input not available", "info")}
-            className="text-text-tertiary hover:text-text-primary"
-          >
-            <Mic size={20} />
-          </button>
           <input
             type="text"
-            placeholder="Ask Kalshi-Bot anything..."
+            placeholder="Ask about trades, P&L, markets..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && sendMessage(input)}
@@ -289,31 +203,6 @@ export default function BotIntelligence() {
           </button>
         </div>
       </div>
-
-      {/* Insight modal */}
-      <Modal open={insightModal !== null} onClose={() => setInsightModal(null)}>
-        {insightModal !== null && (
-          <div>
-            <div className="flex items-center gap-2 mb-3">
-              {(() => {
-                const Icon = insightCards[insightModal].icon;
-                return <Icon size={20} className="text-accent-gold" />;
-              })()}
-              <h3 className="text-lg font-bold">{insightCards[insightModal].title}</h3>
-            </div>
-            <p className="text-sm text-text-secondary leading-relaxed">
-              {insightCards[insightModal].detail}
-            </p>
-            <button
-              onClick={() => setInsightModal(null)}
-              className="mt-4 w-full h-11 rounded-xl text-sm font-semibold text-white"
-              style={{ background: "var(--accent-color)" }}
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
-      </Modal>
     </div>
   );
 }

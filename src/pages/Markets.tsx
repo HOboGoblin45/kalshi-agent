@@ -1,35 +1,57 @@
 import { useState } from "react";
 import { Search } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import MarketCard from "../components/MarketCard";
-import { markets, type Market } from "../data/markets";
+import { useStore } from "../store/useStore";
+import ProbabilityGauge from "../components/ProbabilityGauge";
 
-const categories = ["All", "Politics", "Crypto", "Finance", "Sports", "Weather"] as const;
+function formatVol(v: number | null) {
+  if (!v) return "$0";
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
+  if (v >= 1_000) return `$${(v / 1_000).toFixed(0)}K`;
+  return `$${v}`;
+}
+
+function formatCloseDate(dt: string | null) {
+  if (!dt) return "";
+  try {
+    return new Date(dt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  } catch {
+    return dt;
+  }
+}
 
 export default function Markets() {
+  const navigate = useNavigate();
+  const markets = useStore((s) => s.markets);
+  const agentState = useStore((s) => s.agentState);
   const [search, setSearch] = useState("");
-  const [cat, setCat] = useState<string>("All");
 
   const filtered = markets.filter((m) => {
-    const matchSearch = m.question.toLowerCase().includes(search.toLowerCase());
-    const matchCat = cat === "All" || m.category === cat;
-    return matchSearch && matchCat;
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return (m.title || "").toLowerCase().includes(q) ||
+           (m.subtitle || "").toLowerCase().includes(q) ||
+           (m.ticker || "").toLowerCase().includes(q);
   });
 
   return (
     <div className="p-4 md:p-6 max-w-7xl mx-auto">
-      {/* Header */}
       <div className="flex items-center gap-3 mb-4">
         <h1 className="text-2xl md:text-3xl font-bold">Markets</h1>
-        <div className="flex items-center gap-1.5">
-          <span className="w-2 h-2 rounded-full bg-accent-green pulse-green" />
-          <span className="text-xs font-semibold text-accent-green bg-accent-green/15 px-2 py-0.5 rounded-full">
-            LIVE
-          </span>
-        </div>
+        {agentState && (
+          <div className="flex items-center gap-1.5">
+            <span className={`w-2 h-2 rounded-full ${agentState.enabled ? "bg-accent-green pulse-green" : "bg-accent-red"}`} />
+            <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${agentState.enabled ? "text-accent-green bg-accent-green/15" : "text-accent-red bg-accent-red/15"}`}>
+              {agentState.enabled ? "LIVE" : "OFF"}
+            </span>
+          </div>
+        )}
+        <span className="text-xs text-text-secondary ml-auto font-mono">
+          {filtered.length} markets
+        </span>
       </div>
 
-      {/* Search */}
       <div className="relative mb-4">
         <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
         <input
@@ -41,37 +63,76 @@ export default function Markets() {
         />
       </div>
 
-      {/* Filter chips */}
-      <div className="flex gap-2 overflow-x-auto pb-4 scrollbar-none">
-        {categories.map((c) => (
-          <button
-            key={c}
-            onClick={() => setCat(c)}
-            className={`px-4 py-1.5 rounded-full text-sm font-medium whitespace-nowrap transition-colors ${
-              cat === c
-                ? "text-white"
-                : "bg-bg-surface text-text-secondary border border-border-subtle hover:bg-bg-elevated"
-            }`}
-            style={cat === c ? { background: "var(--accent-color)" } : undefined}
-          >
-            {c}
-          </button>
-        ))}
-      </div>
-
-      {/* Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {filtered.map((m) => (
-          <MarketCard key={m.id} market={m} />
-        ))}
-      </div>
-
-      {filtered.length === 0 && (
+      {filtered.length === 0 && !search && (
         <div className="text-center py-16 text-text-secondary">
-          <p className="text-lg font-medium">No markets found</p>
-          <p className="text-sm mt-1">Try a different search or filter</p>
+          <p className="text-lg font-medium">No markets loaded yet</p>
+          <p className="text-sm mt-1">The agent will load markets on its next scan</p>
         </div>
       )}
+
+      {filtered.length === 0 && search && (
+        <div className="text-center py-16 text-text-secondary">
+          <p className="text-lg font-medium">No markets found</p>
+          <p className="text-sm mt-1">Try a different search</p>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {filtered.map((m) => {
+          const yesPrice = m.yes_bid ?? m.last_price ?? 50;
+          return (
+            <motion.div
+              key={m.ticker}
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              whileHover={{ scale: 1.01 }}
+              className="card cursor-pointer transition-colors hover:border-white/15"
+              onClick={() => navigate(`/market/${encodeURIComponent(m.ticker)}`)}
+            >
+              <div className="flex items-start justify-between mb-3">
+                <span className="text-[10px] font-mono text-text-tertiary bg-bg-elevated px-2 py-0.5 rounded">
+                  {m.ticker?.slice(0, 20)}
+                </span>
+                <ProbabilityGauge value={yesPrice} size={48} />
+              </div>
+
+              <h3 className="font-semibold text-[15px] text-text-primary mb-2 line-clamp-2">
+                {m.title}
+              </h3>
+
+              <div className="flex items-center gap-2 text-xs text-text-secondary mb-3">
+                <span className="font-mono">{formatVol(m.volume)}</span>
+                <span>·</span>
+                <span>{formatCloseDate(m.close_time)}</span>
+              </div>
+
+              <div className="w-full h-2 rounded-full overflow-hidden bg-bg-elevated flex mb-3">
+                <motion.div
+                  className="h-full bg-accent-green rounded-l-full"
+                  initial={{ width: 0 }}
+                  animate={{ width: `${yesPrice}%` }}
+                  transition={{ duration: 0.8, ease: "easeOut" }}
+                />
+                <motion.div
+                  className="h-full bg-accent-red rounded-r-full"
+                  initial={{ width: 0 }}
+                  animate={{ width: `${100 - yesPrice}%` }}
+                  transition={{ duration: 0.8, ease: "easeOut" }}
+                />
+              </div>
+
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-text-secondary">
+                  YES <span className="font-mono text-accent-green">{yesPrice}¢</span>
+                </span>
+                <span className="text-text-secondary">
+                  NO <span className="font-mono text-accent-red">{100 - yesPrice}¢</span>
+                </span>
+              </div>
+            </motion.div>
+          );
+        })}
+      </div>
     </div>
   );
 }
