@@ -13,16 +13,33 @@ export default function Positions() {
   const risk = agentState?.risk;
 
   return (
-    <div className="p-4 md:p-6 max-w-5xl mx-auto">
-      <h1 className="text-2xl md:text-3xl font-bold mb-4">Live Positions</h1>
+    <div className="p-3 md:p-4 max-w-4xl mx-auto">
+      <h1 className="text-xl md:text-2xl font-bold mb-3">Live Positions</h1> REPLACE
+<<<<<<< SEARCH
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+=======
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
 
       {/* Portfolio summary */}
       <div className="card mb-6">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div>
-            <p className="text-xs text-text-secondary uppercase tracking-wider mb-1">Balance</p>
-            <p className="font-mono text-2xl font-bold">${balance.toFixed(2)}</p>
-          </div>
+            <p className="text-[10px] text-text-secondary uppercase tracking-wider mb-1">Balance</p>
+            <p className="font-mono text-xl font-bold">${balance.toFixed(2)}</p>
+          </div> REPLACE
+<<<<<<< SEARCH
+      <h2 className="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-3">
+        Open Positions ({positions.length})
+      </h2>
+=======
+      <h2 className="text-[10px] font-semibold text-text-secondary uppercase tracking-wider mb-2">
+        Open Positions ({positions.length})
+      </h2> REPLACE
+<<<<<<< SEARCH
+        <tr className="border-b border-border-subtle">
+          <th className="text-left px-4 py-2 text-xs text-text-secondary uppercase">Time</th>
+          <th className="text-left px-4 py-2 text-xs text-text-secondary uppercase">Market</th>
+          <th className="text-left px-4 py-2 text-xs text-text-secondary uppercase">Side</th>
           <div>
             <p className="text-xs text-text-secondary uppercase tracking-wider mb-1">Today P&L</p>
             <p className="font-mono text-2xl font-bold">{risk?.day_pnl ?? "$0"}</p>

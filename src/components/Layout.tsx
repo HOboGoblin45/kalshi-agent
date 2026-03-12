@@ -21,7 +21,7 @@ const navItems = [
 
 function Sidebar() {
   return (
-    <aside className="hidden md:flex flex-col w-[220px] h-full bg-bg-surface border-r border-border-subtle shrink-0">
+    <aside className="hidden md:flex flex-col w-[200px] h-full bg-bg-surface border-r border-border-subtle shrink-0">
       <div className="p-4 flex items-center gap-2">
         <div className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm" style={{ background: "var(--accent-color)" }}>
           K
@@ -36,7 +36,7 @@ function Sidebar() {
             to={item.to}
             end={item.to === "/"}
             className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-colors ${
+              `flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] font-medium transition-colors ${
                 isActive
                   ? "bg-white/10 text-text-primary"
                   : "text-text-secondary hover:text-text-primary hover:bg-white/5"
@@ -51,7 +51,7 @@ function Sidebar() {
 
       <div className="p-4 border-t border-border-subtle">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-full bg-accent-blue flex items-center justify-center text-sm font-bold">
+          <div className="w-8 h-8 rounded-full bg-accent-blue flex items-center justify-center text-sm font-bold">
             KA
           </div>
           <div className="flex-1 min-w-0">
@@ -98,7 +98,7 @@ function TopBar() {
   const balance = agentState ? agentState.balance + (agentState.poly_balance || 0) : 0;
 
   return (
-    <header className="h-14 shrink-0 flex items-center justify-between px-4 md:px-6 border-b border-border-subtle bg-bg-surface/80 backdrop-blur-xl sticky top-0 z-30">
+    <header className="h-12 shrink-0 flex items-center justify-between px-3 md:px-5 border-b border-border-subtle bg-bg-surface/80 backdrop-blur-xl sticky top-0 z-30">
       <div className="flex items-center gap-2 md:hidden">
         <div className="w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs" style={{ background: "var(--accent-color)" }}>
           K
