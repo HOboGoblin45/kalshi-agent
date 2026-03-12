@@ -270,7 +270,7 @@ class ExitManager:
         log.info(f"Exit manager: checking positions every {CFG.get('exit_check_interval_minutes', 10)}m")
         while not stop_event.is_set():
             try:
-                if SHARED.get("enabled", True) and not SHARED.get("dry_run", False):
+                if SHARED.get("enabled", True):
                     exits = self.check_positions()
                     poly_exits = self.check_poly_positions()
                     all_exits = exits + poly_exits
