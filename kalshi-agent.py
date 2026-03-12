@@ -221,13 +221,14 @@ class Agent:
             for a in arb_opps[:3]:
                 log.info(f"  ARB: {a['ticker']} -- yes:{a['yes_price']:.0f}c + no:{a['no_price']:.0f}c = {a['total_cost']:.0f}c -- profit: {a['profit_cents']:.1f}c")
                 try:
-                        self.api.place_order(a["ticker"], "yes", 1, int(a["yes_price"]))
-                        self.api.place_order(a["ticker"], "no", 1, int(a["no_price"]))
-                        log.info(f"  ARB EXECUTED: {a['ticker']}")
-                        self.risk.record(a["ticker"], a["title"], "arb", 1, int(a["total_cost"]),
-                            99, int(a["profit_cents"]), "Arbitrage: YES+NO < $1", 0, 0)
-                        self.notifier.notify_arbitrage(a)
-                    except Exception as ex: log.error(f"  ARB failed: {ex}")
+                    self.api.place_order(a["ticker"], "yes", 1, int(a["yes_price"]))
+                    self.api.place_order(a["ticker"], "no", 1, int(a["no_price"]))
+                    log.info(f"  ARB EXECUTED: {a['ticker']}")
+                    self.risk.record(a["ticker"], a["title"], "arb", 1, int(a["total_cost"]),
+                        99, int(a["profit_cents"]), "Arbitrage: YES+NO < $1", 0, 0)
+                    self.notifier.notify_arbitrage(a)
+                except Exception as ex:
+                    log.error(f"  ARB failed: {ex}")
         else:
             log.info("  No within-market arbitrage found (normal)")
 
