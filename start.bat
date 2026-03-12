@@ -7,6 +7,12 @@ echo.
 
 cd /d "%~dp0"
 
+:: Kill any old agent still running on port 9000
+echo Stopping any old agent process...
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":9000 " ^| findstr "LISTENING"') do (
+    taskkill /F /PID %%a >nul 2>&1
+)
+
 :: Check for Python
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
