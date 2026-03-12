@@ -1,26 +1,20 @@
-import { useState, useCallback, createContext, useContext, type ReactNode } from "react";
+import { useState, useCallback, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { CheckCircle, XCircle, Info } from "lucide-react";
+import { ToastContext, type ToastType } from "./toast-context";
 
 interface Toast {
   id: number;
   message: string;
-  type: "success" | "error" | "info";
+  type: ToastType;
 }
-
-interface ToastCtx {
-  toast: (message: string, type?: Toast["type"]) => void;
-}
-
-const Ctx = createContext<ToastCtx>({ toast: () => {} });
-export const useToast = () => useContext(Ctx);
 
 let _id = 0;
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
 
-  const toast = useCallback((message: string, type: Toast["type"] = "info") => {
+  const toast = useCallback((message: string, type: ToastType = "info") => {
     const id = ++_id;
     setToasts((t) => [...t, { id, message, type }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 3000);
@@ -34,7 +28,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <Ctx.Provider value={{ toast }}>
+    <ToastContext.Provider value={{ toast }}>
       {children}
       <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
         <AnimatePresence>
@@ -55,6 +49,6 @@ export function ToastProvider({ children }: { children: ReactNode }) {
           })}
         </AnimatePresence>
       </div>
-    </Ctx.Provider>
+    </ToastContext.Provider>
   );
 }
