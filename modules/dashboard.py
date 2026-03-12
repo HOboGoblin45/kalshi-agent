@@ -43,7 +43,6 @@ tr:hover td{background:#0f1520}
 .yes{color:#34d399}.no{color:#f87171}
 .ft{font-size:11px;color:#3a4a60;padding:10px 16px;text-align:center;border-top:1px solid #1a2536}
 .paused{background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.25);color:#f87171;padding:12px;border-radius:8px;text-align:center;margin-bottom:16px;font-weight:600}
-.dry{background:rgba(96,165,250,.08);border:1px solid rgba(96,165,250,.25);color:#60a5fa;padding:10px;border-radius:8px;text-align:center;margin-bottom:16px;font-weight:600}
 .debate-tag{font-size:9px;padding:2px 5px;border-radius:3px;font-weight:600;margin-left:4px}
 .debate-tag.bull{background:rgba(52,211,153,.15);color:#34d399}
 .debate-tag.bear{background:rgba(248,113,113,.15);color:#f87171}
