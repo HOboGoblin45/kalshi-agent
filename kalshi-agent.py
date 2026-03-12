@@ -18,7 +18,6 @@ Key innovations over v5:
 - Calibration tracking (log predictions to measure accuracy over time)
 
   python kalshi-agent.py --config kalshi-config.json
-  python kalshi-agent.py --config kalshi-config.json
 """
 import os, sys, json, time, datetime, argparse, traceback, threading
 
@@ -43,7 +42,6 @@ from modules.dashboard import start_dashboard
 # ════════════════════════════════════════
 class Agent:
     def __init__(self):
-        self.dry = False; SHARED["dry_run"] = False
         self.api = KalshiAPI(); self.debate = DebateEngine()
         self.risk = RiskMgr(); self.cache = MarketCache(self.api)
         self.data = DataFetcher()
@@ -553,8 +551,14 @@ def main():
     for env_var, cfg_key in env_overrides.items():
         val = os.environ.get(env_var)
         if val: CFG[cfg_key] = val
+    # Strip any dry_run from config -- always trade live
+    CFG.pop("dry_run", None)
     if not CFG["kalshi_api_key_id"] or not CFG["anthropic_api_key"]:
         print("\n  Error: --config with API keys required (or set KALSHI_API_KEY_ID / ANTHROPIC_API_KEY env vars)\n"); sys.exit(1)
+    # Auto-enable Polymarket if keys are provided
+    if CFG.get("polymarket_private_key") and not CFG.get("polymarket_enabled"):
+        CFG["polymarket_enabled"] = True
+        log.info("Polymarket auto-enabled (private key detected)")
     a = Agent()
     try:
         if args.report:
