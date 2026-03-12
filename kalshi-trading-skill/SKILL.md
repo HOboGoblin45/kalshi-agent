@@ -1,5 +1,5 @@
 ---
-name: kalshi-trading
+name: kalshi-trading-skill
 description: Analyze Kalshi prediction markets, find mispriced contracts, and execute trades using a Bull vs Bear debate protocol with live NWS weather and FRED economic data. Use this skill whenever the user mentions Kalshi, prediction markets, event contracts, trading markets, market analysis, finding edge, placing bets, weather markets, Fed rate markets, or wants to scan for trading opportunities. Also use when the user asks to check their Kalshi balance, positions, or trade history.
 ---
 
