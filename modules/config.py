@@ -120,7 +120,7 @@ DEFAULTS = {
 
 CFG = dict(DEFAULTS)
 BASE_URLS = {
-    "prod": "https://api.elections.kalshi.com/trade-api/v2",
+    "prod": "https://trading-api.kalshi.com/trade-api/v2",
     "demo": "https://demo-api.kalshi.co/trade-api/v2",
 }
 
