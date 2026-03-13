@@ -10,7 +10,7 @@ from modules.config import CFG, BASE_URLS, log
 
 try:
     from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import OrderArgs, OrderType
+    from py_clob_client.clob_types import OrderArgs, OrderType, BalanceAllowanceParams, AssetType
     from py_clob_client.constants import POLYGON
     HAS_POLYMARKET = True
 except ImportError:
@@ -173,9 +173,10 @@ class PolymarketAPI:
     def balance(self):
         if not self.client: return 0.0
         try:
-            bal = self.client.get_balance()
-            if isinstance(bal, dict): return float(bal.get("balance", 0)) / 1e6
-            return float(bal) / 1e6 if float(bal) > 100 else float(bal)
+            bal = self.client.get_balance_allowance(
+                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
+            )
+            return float(bal.get("balance", 0)) / 1e6
         except Exception as e:
             log.error(f"Polymarket balance error: {e}"); return 0.0
 

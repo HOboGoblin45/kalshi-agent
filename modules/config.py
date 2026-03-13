@@ -127,7 +127,9 @@ BASE_URLS = {
 SHARED = {
     "enabled": True, "status": "Starting...", "balance": 0, "last_scan": "Never",
     "next_scan": "--", "scan_count": 0, "log_lines": [],
-    "_risk_summary": {}, "_trades": [], "_arb_opportunities": 0,
+    "_risk_summary": {"total": 0, "wins": 0, "losses": 0, "win_rate": "--",
+        "wagered": "$0", "day_trades": 0, "day_pnl": "$0", "exposure": "$0", "paused": False},
+    "_trades": [], "_arb_opportunities": 0,
     "poly_balance": 0, "poly_enabled": False,
     "_cross_arb_opportunities": 0, "_quickflip_active": 0,
     "_cross_platform_risk": {},
