@@ -38,7 +38,8 @@ def combined_similarity(title1, title2):
 
 
 def match_markets(kalshi_markets, poly_markets, threshold=0.70):
-    """Match markets across platforms using title similarity."""
+    """Match markets across platforms using title similarity.
+    Uses Jaccard pre-filter to avoid expensive Levenshtein on all pairs."""
     matches = []; used_poly = set()
     cache_path = "market-matches.json"
     cached_matches = {}
@@ -48,6 +49,16 @@ def match_markets(kalshi_markets, poly_markets, threshold=0.70):
             cutoff = time.time() - 7 * 86400
             cached_matches = {k: v for k, v in cached_matches.items() if v.get("timestamp", 0) > cutoff}
         except Exception: cached_matches = {}
+
+    # Pre-compute word sets for Jaccard filtering
+    poly_word_sets = []
+    for pm in poly_markets:
+        poly_word_sets.append(set(pm.get("title", "").lower().split()))
+
+    # Jaccard-only threshold: if Jaccard alone is below this, skip Levenshtein
+    # Since combined = 0.6*jaccard + 0.4*lev, and lev <= 1.0,
+    # jaccard must be >= (threshold - 0.4) / 0.6 for combined to possibly reach threshold
+    jaccard_prefilter = max(0.0, (threshold - 0.4) / 0.6)
 
     for km in kalshi_markets:
         k_title = km.get("title", ""); k_ticker = km.get("ticker", "")
@@ -61,12 +72,21 @@ def match_markets(kalshi_markets, poly_markets, threshold=0.70):
                     used_poly.add(i); break
             continue
         best_match, best_score = None, 0
+        k_words = set(k_title.lower().split())
         for i, pm in enumerate(poly_markets):
             if i in used_poly: continue
             p_category = pm.get("_category", "other"); p_hrs = pm.get("_hrs_left", 9999)
             if k_category != "other" and p_category != "other" and k_category != p_category: continue
             if abs(k_hrs - p_hrs) > 48 and k_hrs < 9999 and p_hrs < 9999: continue
-            score = combined_similarity(k_title, pm.get("title", ""))
+            # Fast Jaccard pre-filter: skip expensive Levenshtein if no chance of matching
+            p_words = poly_word_sets[i]
+            if k_words and p_words:
+                jaccard = len(k_words & p_words) / len(k_words | p_words)
+            else:
+                jaccard = 0.0
+            if jaccard < jaccard_prefilter:
+                continue
+            score = 0.6 * jaccard + 0.4 * _levenshtein_similarity(k_title, pm.get("title", ""))
             if abs(k_hrs - p_hrs) < 6 and k_hrs < 9999: score = min(1.0, score + 0.05)
             if score > best_score and score >= threshold:
                 best_score = score; best_match = (i, pm)
