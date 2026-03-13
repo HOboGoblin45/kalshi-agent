@@ -40,6 +40,20 @@ def _best_price(m):
     return None
 
 
+def _count_parlay_legs(m):
+    """Count number of outcome legs in a multi-outcome parlay market."""
+    title = m.get("title") or ""
+    if not title:
+        return 1
+    # Parlay titles are comma-separated legs starting with yes/no
+    legs = [l.strip() for l in title.split(",") if l.strip()]
+    if len(legs) <= 1:
+        return 1
+    # Verify they look like parlay legs (start with yes/no)
+    parlay_legs = sum(1 for l in legs if l.lower().startswith(("yes ", "no ")))
+    return max(1, parlay_legs) if parlay_legs >= 2 else 1
+
+
 def score_market(m):
     s = 0; vol = m.get("volume", 0) or 0
     yc = _best_price(m) or 50
@@ -67,6 +81,14 @@ def score_market(m):
     if vol < 10: s -= 1
     if yc <= 15 or yc >= 85: s += 2
     if hrs <= 12 and (yc >= 85 or yc <= 15): s += 2
+
+    # Penalize multi-leg parlays: each extra leg compounds losing probability
+    legs = _count_parlay_legs(m)
+    if legs >= 6: s -= 5       # 6+ legs = near-impossible, heavily penalize
+    elif legs >= 4: s -= 3     # 4-5 legs = very unlikely
+    elif legs >= 2: s -= 1     # 2-3 legs = mild penalty
+    m["_parlay_legs"] = legs
+
     return s
 
 

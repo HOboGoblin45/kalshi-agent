@@ -11,6 +11,8 @@ class RiskMgr:
         self.day_pnl = 0.0
         self.exposure = 0.0
         self.paused = False
+        self.cooldown_trades = 0  # Graduated cooldown: trades remaining at reduced size
+        self._recent_losses = 0   # Consecutive recent losses
         p = CFG["trade_log"]
         self.trades = json.load(open(p)) if os.path.exists(p) else []
         self.traded_tickers = set()
@@ -33,19 +35,45 @@ class RiskMgr:
             self.day_trades = 0
             self.day_pnl = 0.0
             self.paused = False
+            self.cooldown_trades = 0
+            self._recent_losses = 0
             self.traded_tickers.clear()
+
+    @property
+    def in_cooldown(self):
+        return self.cooldown_trades > 0
+
+    @property
+    def cooldown_bet_fraction(self):
+        """During cooldown, reduce bet size to 50%."""
+        return 0.5 if self.in_cooldown else 1.0
 
     def check(self, cost, conf, edge):
         self.new_day()
         if self.paused: return False, "PAUSED"
         if self.day_trades >= CFG["max_daily_trades"]: return False, f"Daily limit ({CFG['max_daily_trades']})"
         if self.exposure + cost > CFG["max_total_exposure"]: return False, "Exposure exceeded"
-        if cost > CFG["max_bet_per_trade"]: return False, "Bet too large"
-        if conf < CFG["min_confidence"]: return False, f"Low confidence ({conf}%)"
+        # During cooldown, enforce half bet size
+        effective_max_bet = CFG["max_bet_per_trade"] * self.cooldown_bet_fraction
+        if cost > effective_max_bet:
+            return False, f"Bet too large (cooldown: max ${effective_max_bet:.2f})"
+        # After 2+ consecutive losses, require higher confidence
+        min_conf = CFG["min_confidence"]
+        if self._recent_losses >= 3:
+            min_conf = max(min_conf, 75)
+        elif self._recent_losses >= 2:
+            min_conf = max(min_conf, 70)
+        if conf < min_conf: return False, f"Low confidence ({conf}% < {min_conf}% required)"
         if abs(edge) < CFG["min_edge_pct"]: return False, f"Low edge ({edge}%)"
+        # Hard stop: full pause at max daily loss
         if self.day_pnl < -CFG["max_daily_loss"]:
             self.paused = True
             return False, "CIRCUIT BREAKER"
+        # Graduated cooldown: enter cooldown at 60% of max daily loss
+        cooldown_threshold = -CFG["max_daily_loss"] * 0.6
+        if self.day_pnl < cooldown_threshold and not self.in_cooldown:
+            self.cooldown_trades = 3
+            log.warning(f"Entering cooldown: day_pnl ${self.day_pnl:.2f} < ${cooldown_threshold:.2f}. Next 3 trades at 50% size.")
         return True, "OK"
 
     def record(self, ticker, title, side, contracts, price_c, conf, edge, evidence,
@@ -59,8 +87,20 @@ class RiskMgr:
         self.day_trades += 1
         self.exposure += cost
         self.traded_tickers.add(ticker)
+        # Decrement cooldown counter
+        if self.cooldown_trades > 0:
+            self.cooldown_trades -= 1
+            if self.cooldown_trades == 0:
+                log.info("Cooldown period ended, resuming normal bet sizing.")
         self._save()
         self._log_calibration(t)
+
+    def record_outcome(self, pnl):
+        """Track consecutive losses for adaptive confidence gating."""
+        if pnl < 0:
+            self._recent_losses += 1
+        else:
+            self._recent_losses = 0
 
     def _log_calibration(self, trade):
         cal_file = CFG["calibration_log"]
@@ -148,7 +188,10 @@ class ExitManager:
             except Exception:
                 continue
 
-            pnl_pct = ((current - entry_price) / entry_price * 100) if entry_price > 0 else 0
+            # Fee-aware PnL: account for taker fees on both entry and exit
+            fee_per_contract = CFG.get("taker_fee_per_contract", 0.07)
+            total_fees_cents = fee_per_contract * 100 * 2  # entry + exit fee in cents
+            pnl_pct = ((current - entry_price - total_fees_cents) / entry_price * 100) if entry_price > 0 else 0
             hours_held = 0
             try:
                 entry_time = datetime.datetime.fromisoformat(original["time"])
@@ -164,7 +207,7 @@ class ExitManager:
                 reason = f"Time exit ({hours_held:.0f}h held)"
             if not reason: continue
 
-            pnl_dollars = contracts * (current - entry_price) / 100
+            pnl_dollars = contracts * (current - entry_price) / 100 - contracts * fee_per_contract * 2
             log.info(f"  EXIT: {tk} -- {reason} | entry:{entry_price}c now:{current:.0f}c P&L:${pnl_dollars:.2f}")
 
             try:
@@ -189,6 +232,7 @@ class ExitManager:
                 original["pnl"] = round(pnl_dollars, 2)
                 self.risk._save()
                 self.risk.day_pnl += pnl_dollars
+                self.risk.record_outcome(pnl_dollars)
                 exits.append({"ticker": tk, "reason": reason, "pnl": pnl_dollars})
                 self.notifier.notify_exit(tk, original.get("title", ""), side, reason, pnl_dollars)
             except Exception as e:
@@ -234,7 +278,9 @@ class ExitManager:
                 if current is None: continue
             except Exception: continue
 
-            pnl_pct = ((current - entry_price) / entry_price * 100) if entry_price > 0 else 0
+            poly_fee = CFG.get("polymarket_fee_per_contract", 0.02)
+            poly_fees_cents = poly_fee * 100 * 2
+            pnl_pct = ((current - entry_price - poly_fees_cents) / entry_price * 100) if entry_price > 0 else 0
             reason = None
             if pnl_pct <= -self.loss_pct:
                 reason = f"Stop loss ({pnl_pct:.0f}% loss)"
@@ -245,7 +291,7 @@ class ExitManager:
             if not reason: continue
 
             contracts = int(size)
-            pnl_dollars = contracts * (current - entry_price) / 100
+            pnl_dollars = contracts * (current - entry_price) / 100 - contracts * poly_fee * 2
             log.info(f"  POLY EXIT: {token_id[:16]}... -- {reason} | entry:{entry_price}c now:{current}c P&L:${pnl_dollars:.2f}")
 
             try:
