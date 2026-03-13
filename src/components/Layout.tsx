@@ -21,44 +21,44 @@ const navItems = [
 
 function Sidebar() {
   return (
-    <aside className="hidden md:flex flex-col w-[176px] h-full bg-bg-surface border-r border-border-subtle shrink-0">
-      <div className="px-2.5 py-2.5 flex items-center gap-1.5">
-        <div className="w-6 h-6 rounded-md flex items-center justify-center font-bold text-[10px]" style={{ background: "var(--accent-color)" }}>
+    <aside className="hidden md:flex flex-col w-[230px] h-full bg-bg-surface border-r border-border-subtle shrink-0">
+      <div className="px-4 py-4 flex items-center gap-2">
+        <div className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm" style={{ background: "var(--accent-color)" }}>
           K
         </div>
-        <span className="font-bold text-xs">Kalshi-Bot</span>
+        <span className="font-bold text-lg">Kalshi-Bot</span>
       </div>
 
-      <nav className="flex-1 px-1.5 mt-1 space-y-0.5">
+      <nav className="flex-1 px-3 mt-1.5 space-y-1">
         {navItems.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
             end={item.to === "/"}
             className={({ isActive }) =>
-              `flex items-center gap-1.5 px-2 py-1.5 rounded-md text-[11px] font-medium transition-colors ${
+              `flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                 isActive
                   ? "bg-white/10 text-text-primary"
                   : "text-text-secondary hover:text-text-primary hover:bg-white/5"
               }`
             }
           >
-            <item.icon size={15} />
+            <item.icon size={18} />
             <span>{item.label}</span>
           </NavLink>
         ))}
       </nav>
 
-      <div className="px-2.5 py-2 border-t border-border-subtle">
-        <div className="flex items-center gap-1.5">
-          <div className="w-6 h-6 rounded-full bg-accent-blue flex items-center justify-center text-[10px] font-bold">
+      <div className="px-4 py-3 border-t border-border-subtle">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-full bg-accent-blue flex items-center justify-center text-sm font-bold">
             KA
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-[11px] font-medium text-text-primary truncate">
+            <p className="text-sm font-medium text-text-primary truncate">
               Kalshi Agent
             </p>
-            <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-accent-gold/15 text-accent-gold">
+            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-accent-gold/15 text-accent-gold">
               LIVE
             </span>
           </div>
@@ -99,15 +99,15 @@ function TopBar() {
   const isDryRun = Boolean(agentState?.dry_run);
 
   return (
-    <header className="h-10 shrink-0 flex items-center justify-between px-2.5 md:px-3.5 border-b border-border-subtle bg-bg-surface/80 backdrop-blur-xl sticky top-0 z-30">
+    <header className="h-14 shrink-0 flex items-center justify-between px-4 md:px-6 border-b border-border-subtle bg-bg-surface/80 backdrop-blur-xl sticky top-0 z-30">
       <div className="flex items-center gap-2 md:hidden">
-        <div className="w-5 h-5 rounded-md flex items-center justify-center font-bold text-[9px]" style={{ background: "var(--accent-color)" }}>
+        <div className="w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs" style={{ background: "var(--accent-color)" }}>
           K
         </div>
-        <span className="font-bold text-xs">Kalshi-Bot</span>
+        <span className="font-bold">Kalshi-Bot</span>
       </div>
       <div className="hidden md:block" />
-      <div className="flex items-center gap-2.5">
+      <div className="flex items-center gap-4">
         {isDryRun && (
           <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-accent-blue/15 text-accent-blue">
             DRY-RUN
@@ -116,10 +116,10 @@ function TopBar() {
         {agentState && (
           <div className="flex items-center gap-2">
             <span className={`w-2 h-2 rounded-full ${agentState.enabled ? "bg-accent-green pulse-green" : "bg-accent-red"}`} />
-            <span className="text-[10px] text-text-secondary">{agentState.status}</span>
+            <span className="text-xs text-text-secondary">{agentState.status}</span>
           </div>
         )}
-        <span className="font-mono text-[11px] md:text-xs font-semibold text-text-primary">
+        <span className="font-mono text-sm font-semibold text-text-primary">
           ${balance.toFixed(2)}
         </span>
       </div>
@@ -166,7 +166,7 @@ export default function Layout() {
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <TopBar />
-        <main className="flex-1 overflow-y-auto pb-20 md:pb-2">
+        <main className="flex-1 overflow-y-auto pb-20 md:pb-4">
           <Outlet />
         </main>
       </div>
