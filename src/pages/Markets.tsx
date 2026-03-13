@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Search } from "lucide-react";
+import { useState, useMemo } from "react";
+import { Search, ChevronDown } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useStore } from "../store/useStore";
@@ -24,113 +24,216 @@ function formatCloseDate(dt: string | null) {
   }
 }
 
-function termBar(pct: number, width = 20): string {
-  const filled = Math.round((pct / 100) * width);
-  return "[" + "|".repeat(filled) + ".".repeat(width - filled) + "]";
+function priceColor(pct: number): string {
+  if (pct >= 70) return "green";
+  if (pct <= 30) return "red";
+  return "amber";
 }
+
+function priceTextClass(pct: number): string {
+  if (pct >= 70) return "text-accent-green";
+  if (pct <= 30) return "text-accent-red";
+  return "text-accent-gold";
+}
+
+type SortKey = "volume" | "yes_price" | "expiry" | "default";
+
+const PAGE_SIZE = 30;
 
 export default function Markets() {
   const navigate = useNavigate();
   const markets = useStore((s) => s.markets);
   const agentState = useStore((s) => s.agentState);
   const [search, setSearch] = useState("");
+  const [sortBy, setSortBy] = useState<SortKey>("default");
+  const [page, setPage] = useState(0);
 
-  const filtered = markets.filter((m) => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return (
-      (m.title || "").toLowerCase().includes(q) ||
-      (m.subtitle || "").toLowerCase().includes(q) ||
-      (m.ticker || "").toLowerCase().includes(q)
-    );
-  });
+  const filtered = useMemo(() => {
+    let list = markets.filter((m) => {
+      if (!search) return true;
+      const q = search.toLowerCase();
+      return (
+        (m.title || "").toLowerCase().includes(q) ||
+        (m.subtitle || "").toLowerCase().includes(q) ||
+        (m.ticker || "").toLowerCase().includes(q)
+      );
+    });
+
+    if (sortBy === "volume") {
+      list = [...list].sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0));
+    } else if (sortBy === "yes_price") {
+      list = [...list].sort((a, b) => {
+        const pa = a.yes_bid ?? a.last_price ?? 50;
+        const pb = b.yes_bid ?? b.last_price ?? 50;
+        return pb - pa;
+      });
+    } else if (sortBy === "expiry") {
+      list = [...list].sort((a, b) => {
+        const da = a.close_time ? new Date(a.close_time).getTime() : Infinity;
+        const db = b.close_time ? new Date(b.close_time).getTime() : Infinity;
+        return da - db;
+      });
+    }
+
+    return list;
+  }, [markets, search, sortBy]);
+
+  const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+  const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
+  // Reset page when search/sort changes
+  const handleSearch = (val: string) => { setSearch(val); setPage(0); };
 
   return (
     <div className="p-3 md:p-4 max-w-7xl mx-auto">
+      {/* Header */}
       <div className="flex items-center gap-2 mb-3">
         <h1 className="text-sm font-bold uppercase tracking-wider term-glow">+--- MARKETS ---+</h1>
         {agentState && (
-          <span className={`text-[10px] font-bold ${agentState.enabled ? "text-accent-green" : "text-accent-red"}`}>
+          <span className={`text-xs font-bold ${agentState.enabled ? "text-accent-green" : "text-accent-red"}`}>
             {agentState.enabled ? "[LIVE]" : "[OFF]"}
           </span>
         )}
-        <span className="text-[10px] text-text-tertiary ml-auto">
-          {filtered.length} results
+        <span className="text-xs text-text-secondary ml-auto">
+          {filtered.length} markets
         </span>
       </div>
 
-      <div className="relative mb-3">
-        <Search
-          size={14}
-          className="absolute left-2 top-1/2 -translate-y-1/2 text-text-tertiary"
-        />
-        <input
-          type="text"
-          placeholder="grep markets..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="w-full h-9 pl-8 pr-3 bg-bg-surface border border-border-subtle text-xs text-accent-green placeholder:text-text-tertiary focus:outline-none focus:border-accent-green"
-        />
+      {/* Search + Sort row */}
+      <div className="flex gap-2 mb-4">
+        <div className="relative flex-1">
+          <Search
+            size={14}
+            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-tertiary"
+          />
+          <input
+            type="text"
+            placeholder="grep markets..."
+            value={search}
+            onChange={(e) => handleSearch(e.target.value)}
+            className="w-full h-9 pl-8 pr-3 bg-bg-surface border border-border-subtle text-sm text-accent-green placeholder:text-text-tertiary focus:outline-none focus:border-accent-green"
+          />
+        </div>
+        <div className="relative">
+          <select
+            value={sortBy}
+            onChange={(e) => { setSortBy(e.target.value as SortKey); setPage(0); }}
+            className="h-9 pl-2 pr-7 bg-bg-surface border border-border-subtle text-xs text-accent-green appearance-none cursor-pointer focus:outline-none focus:border-accent-green"
+          >
+            <option value="default">sort:default</option>
+            <option value="volume">sort:volume</option>
+            <option value="yes_price">sort:yes%</option>
+            <option value="expiry">sort:expiry</option>
+          </select>
+          <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-text-tertiary pointer-events-none" />
+        </div>
       </div>
 
+      {/* Empty states */}
       {filtered.length === 0 && !search && (
         <div className="text-center py-10 text-text-secondary card">
-          <p className="text-xs">[INFO] no markets loaded yet</p>
-          <p className="text-[10px] text-text-tertiary mt-1">agent will load markets on next scan...</p>
+          <p className="text-sm">[INFO] no markets loaded yet</p>
+          <p className="text-xs text-text-tertiary mt-1">agent will load markets on next scan...</p>
         </div>
       )}
 
       {filtered.length === 0 && search && (
         <div className="text-center py-10 text-text-secondary card">
-          <p className="text-xs">[WARN] no matches for &quot;{search}&quot;</p>
+          <p className="text-sm">[WARN] no matches for &quot;{search}&quot;</p>
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-        {filtered.map((m) => {
+      {/* Market grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {paged.map((m) => {
           const yesPrice = m.yes_bid ?? m.last_price ?? 50;
+          const noPrice = 100 - yesPrice;
+          const color = priceColor(yesPrice);
+          const hasLiquidity = (m.volume ?? 0) > 0;
+          const cardBorder = !hasLiquidity ? "card-muted" : `card-${color}`;
+
           return (
             <motion.div
               key={m.ticker}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="card cursor-pointer transition-colors hover:border-accent-green group"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+              className={`card ${cardBorder} cursor-pointer group`}
               onClick={() => navigate(`/market/${encodeURIComponent(m.ticker)}`)}
             >
-              <div className="flex items-start justify-between mb-1.5">
-                <span className="text-[10px] text-text-tertiary">
-                  {m.ticker?.slice(0, 24)}
-                </span>
-                <span className="text-xs font-bold term-glow text-accent-green">{yesPrice}%</span>
+              {/* Category tag + ticker */}
+              <div className="flex items-center justify-between mb-2">
+                {m.category ? (
+                  <span className="text-[10px] uppercase tracking-wider text-text-tertiary bg-bg-elevated px-1.5 py-0.5">
+                    {m.category}
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-text-tertiary truncate max-w-[180px]">
+                    {m.ticker}
+                  </span>
+                )}
+                {!hasLiquidity && (
+                  <span className="text-[10px] text-text-tertiary bg-bg-elevated px-1.5 py-0.5">NO LIQ</span>
+                )}
               </div>
 
-              <h3 className="text-xs text-accent-green font-medium mb-1.5 line-clamp-2 leading-snug">
+              {/* Title */}
+              <h3 className="text-sm text-accent-green font-semibold mb-3 line-clamp-2 leading-snug group-hover:term-glow">
                 {m.title}
               </h3>
 
-              <div className="flex items-center gap-2 text-[10px] text-text-tertiary mb-2">
-                <span>vol:{formatVol(m.volume)}</span>
-                <span>|</span>
-                <span>exp:{formatCloseDate(m.close_time)}</span>
+              {/* Price bar */}
+              <div className="price-bar mb-2">
+                <div
+                  className={`price-bar-fill ${color}`}
+                  style={{ width: `${yesPrice}%` }}
+                />
               </div>
 
-              <div className="text-[10px] mb-1.5 tracking-tight">
-                <span className="text-accent-green">{termBar(yesPrice)}</span>
-                <span className="text-text-tertiary ml-1">{yesPrice}%</span>
+              {/* YES / NO prices - prominent */}
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-xs text-text-secondary">YES</span>
+                  <span className={`text-lg font-bold ${priceTextClass(yesPrice)}`}>{yesPrice}c</span>
+                </div>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-xs text-text-secondary">NO</span>
+                  <span className={`text-lg font-bold ${priceTextClass(noPrice)}`}>{noPrice}c</span>
+                </div>
               </div>
 
-              <div className="flex items-center justify-between text-[10px]">
-                <span className="text-text-secondary">
-                  YES <span className="text-accent-green font-bold">{yesPrice}c</span>
-                </span>
-                <span className="text-text-secondary">
-                  NO <span className="text-accent-red font-bold">{100 - yesPrice}c</span>
-                </span>
+              {/* Metadata row */}
+              <div className="flex items-center justify-between text-xs text-text-tertiary border-t border-border-subtle pt-2">
+                <span>vol: {formatVol(m.volume)}</span>
+                <span>exp: {formatCloseDate(m.close_time)}</span>
               </div>
             </motion.div>
           );
         })}
       </div>
+
+      {/* Pagination */}
+      {totalPages > 1 && (
+        <div className="flex items-center justify-center gap-3 mt-4 text-xs">
+          <button
+            onClick={() => setPage(Math.max(0, page - 1))}
+            disabled={page === 0}
+            className="px-2 py-1 border border-border-subtle text-text-secondary hover:text-accent-green hover:border-accent-green disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            &lt; prev
+          </button>
+          <span className="text-text-secondary">
+            page {page + 1}/{totalPages}
+          </span>
+          <button
+            onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
+            disabled={page >= totalPages - 1}
+            className="px-2 py-1 border border-border-subtle text-text-secondary hover:text-accent-green hover:border-accent-green disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            next &gt;
+          </button>
+        </div>
+      )}
     </div>
   );
 }
