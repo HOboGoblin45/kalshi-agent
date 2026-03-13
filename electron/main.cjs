@@ -62,50 +62,52 @@ async function ensureBackendRunning() {
   const cfg = path.join(cwd, 'kalshi-config.json');
   const fs = require('fs');
   const logPath = path.join(cwd, 'electron-backend.log');
-  const logStream = fs.createWriteStream(logPath, { flags: 'w' });
+  const logFd = fs.openSync(logPath, 'w');
 
   // Try the real agent first
   const args = ['kalshi-agent.py', '--config', cfg, '--dry-run'];
   backendProc = spawn('python', args, {
     cwd,
     windowsHide: true,
-    stdio: ['ignore', logStream, logStream],
+    stdio: ['ignore', logFd, logFd],
   });
 
   let agentExited = false;
   backendProc.on('exit', (code) => {
     agentExited = true;
     backendProc = null;
-    logStream.write(`\n[electron] agent exited with code ${code}\n`);
+    try { fs.writeSync(logFd, `\n[electron] agent exited with code ${code}\n`); } catch (_) {}
   });
 
   // Wait up to 10s for the real agent
   for (let i = 0; i < 20; i += 1) {
     const ok = await pingDashboard();
-    if (ok) return true;
+    if (ok) { try { fs.closeSync(logFd); } catch (_) {} return true; }
     if (agentExited) break;
     await new Promise((r) => setTimeout(r, 500));
   }
 
   // If real agent failed, try the mock server as fallback
   if (!await pingDashboard()) {
-    logStream.write('\n[electron] real agent failed, trying mock server...\n');
+    try { fs.writeSync(logFd, '\n[electron] real agent failed, trying mock server...\n'); } catch (_) {}
     stopBackend();
-    const mockArgs = [path.join('scripts', 'mock_dashboard_server.py'), '--port', '9000'];
+    const mockScript = path.join(cwd, 'scripts', 'mock_dashboard_server.py');
+    const mockArgs = [mockScript, '--port', '9000'];
     backendProc = spawn('python', mockArgs, {
       cwd,
       windowsHide: true,
-      stdio: ['ignore', logStream, logStream],
+      stdio: ['ignore', logFd, logFd],
     });
     backendProc.on('exit', () => { backendProc = null; });
 
     for (let i = 0; i < 20; i += 1) {
       const ok = await pingDashboard();
-      if (ok) return true;
+      if (ok) { try { fs.closeSync(logFd); } catch (_) {} return true; }
       await new Promise((r) => setTimeout(r, 500));
     }
   }
 
+  try { fs.closeSync(logFd); } catch (_) {}
   return false;
 }
 
