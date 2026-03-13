@@ -14,20 +14,26 @@ function loadFallbackPage() {
 <head>
   <meta charset="UTF-8" />
   <title>Kalshi Agent Desktop</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet" />
   <style>
-    body { margin:0; background:#000; color:#fff; font-family:Segoe UI,Arial,sans-serif; display:flex; align-items:center; justify-content:center; height:100vh; }
-    .card { width: min(560px, 92vw); background:#1c1c1e; border:1px solid rgba(255,255,255,.1); border-radius:12px; padding:18px; }
-    h1 { margin:0 0 10px; font-size:18px; }
-    p { margin:0 0 10px; font-size:13px; color:rgba(235,235,245,.8); }
-    code { background:#2c2c2e; padding:2px 6px; border-radius:6px; }
+    body { margin:0; background:#0a0a0a; color:#33ff00; font-family:"JetBrains Mono",monospace; display:flex; align-items:center; justify-content:center; height:100vh; }
+    .card { width: min(560px, 92vw); border:1px solid #1f521f; padding:18px; }
+    h1 { margin:0 0 10px; font-size:14px; text-transform:uppercase; letter-spacing:2px; text-shadow:0 0 5px rgba(51,255,0,0.5); }
+    p { margin:0 0 8px; font-size:11px; color:#88cc44; }
+    code { color:#ffb000; }
+    .blink { animation: blink 1s step-end infinite; }
+    @keyframes blink { 50% { opacity:0; } }
+    .err { color:#ff3333; font-weight:bold; }
   </style>
 </head>
 <body>
   <div class="card">
-    <h1>Kalshi Dashboard Unavailable</h1>
-    <p>The desktop shell is running but the backend dashboard is not reachable.</p>
-    <p>The app will attempt to auto-start local backend in dry-run mode.</p>
-    <p>Expected URL: <code>${DASHBOARD_URL}</code></p>
+    <h1>[ERR] DASHBOARD UNAVAILABLE</h1>
+    <p>the desktop shell is running but the backend is not reachable.</p>
+    <p>attempting to auto-start backend in dry-run mode...</p>
+    <p>target: <code>${DASHBOARD_URL}</code></p>
+    <p style="margin-top:12px;color:#1f521f">$ python kalshi-agent.py --config kalshi-config.json --dry-run</p>
+    <p><span class="blink">_</span></p>
   </div>
 </body>
 </html>`;
