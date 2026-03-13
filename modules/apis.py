@@ -10,7 +10,7 @@ from modules.config import CFG, BASE_URLS, log
 
 try:
     from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import OrderArgs, OrderType, BalanceAllowanceParams, AssetType
+    from py_clob_client.clob_types import OrderArgs, OrderType, BalanceAllowanceParams, AssetType, ApiCreds
     from py_clob_client.constants import POLYGON
     HAS_POLYMARKET = True
 except ImportError:
@@ -150,7 +150,7 @@ class PolymarketAPI:
             chain_id = POLYGON if HAS_POLYMARKET else 137
 
             if api_key and api_secret and api_passphrase:
-                creds = {"apiKey": api_key, "secret": api_secret, "passphrase": api_passphrase}
+                creds = ApiCreds(api_key=api_key, api_secret=api_secret, api_passphrase=api_passphrase)
                 self.client = ClobClient(CLOB_API, key=self.private_key, chain_id=chain_id,
                                           creds=creds, funder=funder)
             else:
@@ -261,9 +261,9 @@ class PolymarketAPI:
     def positions(self):
         if not self.client: return []
         try:
-            positions = self.client.get_positions()
-            if isinstance(positions, list): return positions
-            return positions.get("positions", []) if isinstance(positions, dict) else []
+            orders = self.client.get_orders()
+            if isinstance(orders, list): return orders
+            return orders.get("orders", []) if isinstance(orders, dict) else []
         except Exception as e:
             log.error(f"Polymarket positions error: {e}"); return []
 
