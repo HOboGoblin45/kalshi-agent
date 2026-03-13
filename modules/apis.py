@@ -96,6 +96,27 @@ class KalshiAPI:
         return self._req("POST", "/portfolio/orders", o)
 
 
+def _normalize_kalshi(m):
+    """Convert Kalshi API dollar-string fields to cent integers for backward compat."""
+    def _to_cents(key):
+        try:
+            v = float(m.get(key, 0) or 0)
+            return int(round(v * 100))
+        except (ValueError, TypeError):
+            return None
+    m["yes_bid"] = _to_cents("yes_bid_dollars")
+    m["no_bid"] = _to_cents("no_bid_dollars")
+    m["yes_ask"] = _to_cents("yes_ask_dollars")
+    m["no_ask"] = _to_cents("no_ask_dollars")
+    m["last_price"] = _to_cents("last_price_dollars")
+    try:
+        m["volume"] = int(float(m.get("volume_fp", 0) or 0))
+        m["volume_24h"] = int(float(m.get("volume_24h_fp", 0) or 0))
+    except (ValueError, TypeError):
+        pass
+    return m
+
+
 class MarketCache:
     def __init__(self, api):
         self.api = api; self.markets = []; self.last_refresh = 0
@@ -107,7 +128,8 @@ class MarketCache:
         if not self.markets or (now - self.last_refresh) > self.ttl:
             log.info("Loading markets (full refresh)...")
             try:
-                fresh = self.api.all_markets(); self.markets = fresh; self.last_refresh = now
+                fresh = [_normalize_kalshi(m) for m in self.api.all_markets()]
+                self.markets = fresh; self.last_refresh = now
                 self._refresh_failures = 0
                 log.info(f"Cached {len(self.markets)} markets")
             except Exception as e:
