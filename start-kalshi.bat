@@ -13,49 +13,56 @@ echo  ==========================================
 
 :: Check for Node
 where node >nul 2>&1
-if %errorlevel% neq 0 (
-    echo  [ERR] node.js not found in PATH
-    echo  Install from https://nodejs.org
-    pause
-    exit /b 1
-)
+if %errorlevel% neq 0 goto :nonode
 
 :: Check for Python
 where python >nul 2>&1
-if %errorlevel% neq 0 (
-    echo  [ERR] python not found in PATH
-    echo  Install from https://python.org
-    pause
-    exit /b 1
-)
+if %errorlevel% neq 0 goto :nopython
 
 :: Install deps if needed
-if not exist "node_modules" (
-    echo  [INFO] Installing dependencies...
-    call npm install
-)
+if not exist "node_modules" goto :installdeps
+goto :checkbuild
 
-:: Build if dist is missing
-if not exist "dist\index.html" (
-    echo  [INFO] Building frontend...
-    call npm run build
-)
+:installdeps
+echo  [INFO] Installing dependencies...
+call npm install
 
-:: Create config if missing
-if not exist "kalshi-config.json" (
-    echo  [INFO] Creating default config (dry-run mode)...
-    echo {"dry_run": true, "dashboard_port": 9000, "dashboard_host": "127.0.0.1"} > kalshi-config.json
-)
+:checkbuild
+if not exist "dist\index.html" goto :build
+goto :checkconfig
 
+:build
+echo  [INFO] Building frontend...
+call npm run build
+
+:checkconfig
+if not exist "kalshi-config.json" goto :makeconfig
+goto :launch
+
+:makeconfig
+echo  [INFO] Creating default config...
+echo {"dry_run": true, "dashboard_port": 9000, "dashboard_host": "127.0.0.1"} > kalshi-config.json
+
+:launch
 echo.
 echo  [OK] Launching Electron desktop app...
 echo  The app will auto-start the backend agent.
 echo  Close this window to stop the agent.
 echo.
-
-:: Launch Electron (it handles starting the Python backend itself)
 call npx electron .
-
 echo.
 echo  [INFO] Kalshi Agent stopped.
 pause
+goto :eof
+
+:nonode
+echo  [ERR] node.js not found in PATH
+echo  Install from https://nodejs.org
+pause
+exit /b 1
+
+:nopython
+echo  [ERR] python not found in PATH
+echo  Install from https://python.org
+pause
+exit /b 1
