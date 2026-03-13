@@ -70,16 +70,49 @@ class Agent:
         mult = CFG.get("ai_scan_interval_multiplier", 5)
         return self._scan_number % mult == 0
 
+    def _update_progress(self, phase_num, phase_name, step="", total_phases=4):
+        pct = int((phase_num / total_phases) * 100) if total_phases > 0 else 0
+        with SHARED_LOCK:
+            SHARED["_scan_progress"] = {
+                "phase": phase_name, "step": step, "pct": min(pct, 100),
+                "total_phases": total_phases, "current_phase": phase_num,
+            }
+
+    def _generate_scan_summary(self, scan_type, scan_events):
+        """Use Anthropic to generate a brief, readable scan summary."""
+        try:
+            if not hasattr(self, 'debate') or not self.debate.client:
+                return ""
+            events_text = "\n".join(f"- {e}" for e in scan_events[-30:])
+            resp = self.debate.client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=300,
+                messages=[{"role": "user", "content":
+                    f"You are a trading agent dashboard assistant. Summarize this scan in 2-4 concise sentences for the user. "
+                    f"Focus on: what was found, any trades made (or why not), and key market observations. "
+                    f"Use a direct, terminal-style tone. No markdown.\n\n"
+                    f"Scan type: {scan_type}\n"
+                    f"Events:\n{events_text}"}],
+            )
+            return resp.content[0].text.strip()
+        except Exception as e:
+            log.debug(f"Scan summary generation failed: {e}")
+            return ""
+
     def scan(self):
         if not SHARED["enabled"]:
             SHARED["status"] = "Disabled"; return
         self._scan_number += 1
         ai_due = self._is_ai_scan_due()
         scan_type = "FULL (arb + AI)" if ai_due else "FAST (arb only)"
+        total_phases = 4 if ai_due else 3
+        scan_events = []
         SHARED["status"] = "Scanning..."
+        self._update_progress(0, "Initializing", "Starting scan...", total_phases)
         log.info("=" * 50); log.info(f"SCAN #{self._scan_number} ({scan_type})")
 
         # ── BALANCE CHECK ──
+        self._update_progress(0, "Initializing", "Checking balances...", total_phases)
         bal = self.api.balance(); SHARED["balance"] = bal
         poly_bal = 0.0
         if self.poly_enabled and self.poly_api:
@@ -88,7 +121,12 @@ class Agent:
             SHARED["poly_balance"] = poly_bal
         combined_bal = bal + poly_bal
         log.info(f"Balance: Kalshi ${bal:.2f} | Polymarket ${poly_bal:.2f} | Combined ${combined_bal:.2f}")
-        if combined_bal < 1: SHARED["status"] = "Low balance"; return
+        scan_events.append(f"Balance: Kalshi ${bal:.2f} + Polymarket ${poly_bal:.2f} = ${combined_bal:.2f}")
+        if combined_bal < 1:
+            SHARED["status"] = "Low balance"
+            scan_events.append("Scan aborted: combined balance below $1")
+            with SHARED_LOCK: SHARED["_scan_progress"] = {"phase": "idle", "step": "", "pct": 0, "total_phases": total_phases, "current_phase": 0}
+            return
 
         # ── COMPOUNDING ──
         if CFG.get("compounding_enabled", True):
@@ -116,6 +154,7 @@ class Agent:
             return
 
         # ── LOAD MARKETS ──
+        self._update_progress(0, "Initializing", "Loading markets...", total_phases)
         mkts = self.cache.get()
         # Store markets for frontend API
         with SHARED_LOCK:
@@ -136,6 +175,8 @@ class Agent:
             if "platform" not in m: m["platform"] = "kalshi"
 
         # ── PRE-FETCH LIVE DATA ──
+        self._update_progress(0, "Initializing", "Fetching live data...", total_phases)
+        scan_events.append(f"Loaded {len(mkts)} Kalshi markets" + (f" + {len(poly_mkts)} Polymarket markets" if poly_mkts else ""))
         SHARED["status"] = "Fetching live data..."
         cat_rules = CFG.get("category_rules", {})
         active_categories = set()
@@ -152,6 +193,7 @@ class Agent:
         # PHASE 1: CROSS-PLATFORM ARBITRAGE
         # ══════════════════════════════════════
         if self.poly_enabled and poly_mkts and self.poly_api and CFG.get("cross_arb_enabled", True):
+            self._update_progress(1, "Cross-Platform Arb", "Matching markets...", total_phases)
             SHARED["status"] = "Cross-platform arbitrage scan..."
             log.info("Phase 1: Cross-platform arbitrage scan...")
             try:
@@ -176,6 +218,7 @@ class Agent:
                     fee_poly=CFG.get("polymarket_fee_per_contract", 0.00))
                 SHARED["_cross_arb_opportunities"] = len(cross_arbs)
 
+                scan_events.append(f"Phase 1: {len(self.cross_platform_matches)} cross-platform matches, {len(cross_arbs)} arb opportunities")
                 if cross_arbs:
                     for ca in cross_arbs[:3]:
                         log.info(f"  CROSS-ARB: {ca['title'][:40]} -- {ca['strategy_desc']} -- profit: {ca['profit_cents']:.1f}c")
@@ -208,13 +251,19 @@ class Agent:
         # ══════════════════════════════════════
         # PHASE 2: WITHIN-MARKET ARBITRAGE
         # ══════════════════════════════════════
+        self._update_progress(2, "Within-Market Arb", "Scanning orderbooks...", total_phases)
         if not CFG.get("within_arb_enabled", True):
             log.info("Phase 2: SKIPPED (within_arb_enabled=false)")
             arb_opps = []
+            scan_events.append("Phase 2: Skipped (disabled)")
         else:
             log.info("Phase 2: Within-market arbitrage scan...")
             arb_opps = scan_arbitrage(self.api, mkts, ob_cache=self._last_orderbook_cache)
         SHARED["_arb_opportunities"] = len(arb_opps) + SHARED.get("_cross_arb_opportunities", 0)
+        if arb_opps:
+            scan_events.append(f"Phase 2: {len(arb_opps)} within-market arb opportunities found")
+        else:
+            scan_events.append("Phase 2: No within-market arbitrage found")
         if arb_opps:
             for a in arb_opps[:3]:
                 log.info(f"  ARB: {a['ticker']} -- yes:{a['yes_price']:.0f}c + no:{a['no_price']:.0f}c = {a['total_cost']:.0f}c -- profit: {a['profit_cents']:.1f}c")
@@ -236,6 +285,7 @@ class Agent:
         # ══════════════════════════════════════
         # PHASE 3: QUICK-FLIP SCAN
         # ══════════════════════════════════════
+        self._update_progress(3, "Quick-Flip Scan", "Finding scalp targets...", total_phases)
         if CFG.get("quickflip_enabled", True):
             log.info("Phase 3: Quick-flip scan...")
             try:
@@ -245,6 +295,7 @@ class Agent:
                     max_price=CFG.get("quickflip_max_price", 15),
                     min_volume=max(50, CFG.get("min_volume", 10)))
                 SHARED["_quickflip_active"] = len(qf_candidates)
+                scan_events.append(f"Phase 3: {len(qf_candidates)} quick-flip candidates found")
                 if qf_candidates:
                     for qf in qf_candidates[:3]:
                         m = qf["market"]
@@ -287,12 +338,16 @@ class Agent:
         # ══════════════════════════════════════
         if not CFG.get("debate_enabled", True):
             log.info("Phase 4: SKIPPED (debate_enabled=false)")
-            self._finish_scan(bal, poly_bal)
+            scan_events.append("Phase 4: Skipped (debate disabled)")
+            self._finish_scan(bal, poly_bal, scan_type, scan_events)
             return
         if not ai_due:
-            log.info(f"Phase 4: SKIPPED (next AI scan in {CFG.get('ai_scan_interval_multiplier', 5) - (self._scan_number % CFG.get('ai_scan_interval_multiplier', 5))} scans)")
-            self._finish_scan(bal, poly_bal)
+            scans_until = CFG.get('ai_scan_interval_multiplier', 5) - (self._scan_number % CFG.get('ai_scan_interval_multiplier', 5))
+            log.info(f"Phase 4: SKIPPED (next AI scan in {scans_until} scans)")
+            scan_events.append(f"Phase 4: Skipped (AI scan in {scans_until} more scans)")
+            self._finish_scan(bal, poly_bal, scan_type, scan_events)
             return
+        self._update_progress(4, "AI Analysis", "Running debate engine...", total_phases)
         log.info("Phase 4: AI directional trading...")
         short_term, long_term = filter_and_rank(mkts)
         log.info(f"Short-term (<{CFG['max_close_hours']}h): {len(short_term)} | Long-term: {len(long_term)}")
@@ -304,7 +359,11 @@ class Agent:
 
         batch = short_term[:CFG["markets_per_scan"]]
         if long_term: batch.extend(long_term[:max(10, CFG["markets_per_scan"] - len(batch))])
-        if not batch: SHARED["status"] = "Idle -- no targets"; self._finish_scan(bal, poly_bal); return
+        if not batch:
+            SHARED["status"] = "Idle -- no targets"
+            scan_events.append("Phase 4: No market targets found")
+            self._finish_scan(bal, poly_bal, scan_type, scan_events)
+            return
 
         existing = set()
         try:
@@ -319,11 +378,17 @@ class Agent:
         existing.update(self.risk.traded_tickers)
 
         SHARED["status"] = f"AI scanning {len(batch)} markets..."
+        self._update_progress(4, "AI Analysis", f"Quick-scanning {len(batch)} markets...", total_phases)
         log.info(f"Quick-scanning {len(batch)} markets...")
         data_brief = self.data.format_brief_for_scan()
         cands = self.debate.quick_scan(batch, existing, data_brief)
         log.info(f"Candidates: {len(cands)}")
-        if not cands: SHARED["status"] = "Idle -- no edge"; self._finish_scan(bal, poly_bal); return
+        scan_events.append(f"Phase 4: Scanned {len(batch)} markets, {len(cands)} candidates found")
+        if not cands:
+            SHARED["status"] = "Idle -- no edge"
+            scan_events.append("Phase 4: No edge found in any market")
+            self._finish_scan(bal, poly_bal, scan_type, scan_events)
+            return
 
         for c in cands:
             cm = " [CANT-MISS]" if c.get("is_cant_miss") else ""
@@ -337,14 +402,18 @@ class Agent:
                     poly_match_lookup[k_ticker] = match["polymarket"]
 
         # ── BULL vs BEAR DEBATE on top candidates ──
+        debate_total = min(len(cands), CFG["deep_dive_top_n"])
+        debate_idx = 0
         for cand in cands[:CFG["deep_dive_top_n"]]:
             if not SHARED["enabled"]: break
             tk = cand.get("ticker", "")
             if not tk or tk in existing: continue
             mkt = next((m for m in mkts if m["ticker"] == tk), None)
             if not mkt: continue
+            debate_idx += 1
 
             hrs = mkt.get("_hrs_left", 9999); cat = mkt.get("_category", "other")
+            self._update_progress(4, "AI Analysis", f"Debating {tk} ({debate_idx}/{debate_total})...", total_phases)
             SHARED["status"] = f"Debating {tk}..."
             log.info(f"\n  DEBATE: [{cat.upper()}] {tk} -- {mkt.get('title', '')[:50]}")
 
@@ -406,7 +475,9 @@ class Agent:
             log.info(f"  Evidence: {r['evidence'][:70]}")
             if r.get("risk"): log.info(f"  Risk: {r['risk'][:70]}")
 
-            if r["side"] == "HOLD": log.info("  -> HOLD"); continue
+            scan_events.append(f"Debate {tk}: {r['side']} prob={r['probability']}% conf={r['confidence']}% edge={r['edge']}% -- {r['evidence'][:80]}")
+
+            if r["side"] == "HOLD": log.info("  -> HOLD"); scan_events.append(f"  {tk}: HOLD -- no action"); continue
 
             if hrs > CFG["max_close_hours"]:
                 if abs(r["edge"]) < CFG["cant_miss_edge_pct"] or r["confidence"] < CFG["cant_miss_min_confidence"]:
@@ -474,9 +545,11 @@ class Agent:
                 continue
 
             log.info(f"  * EXECUTE: BUY {r['side'].upper()} {contracts}x {tk} @{bp}c [{cat}] on {trade_platform.upper()}")
+            scan_events.append(f"TRADE: BUY {r['side']} {contracts}x {tk} @{bp}c on {trade_platform} (conf={r['confidence']}% edge={r['edge']}%)")
             try:
                 if CFG.get("dry_run", True):
                     log.info("  DRY-RUN: order not sent")
+                    scan_events.append(f"  {tk}: DRY-RUN -- order simulated, not sent")
                 else:
                     if trade_platform == "kalshi":
                         res = self.api.place_order(tk, side_lower, contracts, bp)
@@ -502,18 +575,26 @@ class Agent:
             except Exception as ex: log.error(f"  Order failed: {ex}")
             time.sleep(5)
 
-        self._finish_scan(bal, poly_bal)
+        self._finish_scan(bal, poly_bal, scan_type, scan_events)
 
-    def _finish_scan(self, kalshi_bal=None, poly_bal=None):
+    def _finish_scan(self, kalshi_bal=None, poly_bal=None, scan_type="", scan_events=None):
         with SHARED_LOCK:
             SHARED["_risk_summary"] = self.risk.summary(); SHARED["_trades"] = self.risk.trades
             SHARED["status"] = "Idle"; SHARED["last_scan"] = datetime.datetime.now().strftime("%H:%M:%S")
             SHARED["scan_count"] += 1
             if kalshi_bal is not None: SHARED["balance"] = kalshi_bal
             if poly_bal is not None: SHARED["poly_balance"] = poly_bal
+            SHARED["_scan_progress"] = {"phase": "idle", "step": "", "pct": 100, "total_phases": 0, "current_phase": 0}
         s = self.risk.summary()
         combined = (kalshi_bal or 0) + (poly_bal or 0)
         log.info(f"\nScan done. {s['day_trades']} trades, exposure {s['exposure']}, combined balance ${combined:.2f}")
+        if scan_events:
+            scan_events.append(f"Scan complete. {s['day_trades']} day trades, exposure {s['exposure']}, balance ${combined:.2f}")
+            summary = self._generate_scan_summary(scan_type, scan_events)
+            if summary:
+                with SHARED_LOCK:
+                    SHARED["_scan_summary"] = summary
+                log.info(f"AI Summary: {summary}")
 
     def run(self):
         iv = CFG["scan_interval_minutes"] * 60

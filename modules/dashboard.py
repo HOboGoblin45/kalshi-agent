@@ -163,7 +163,9 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
             "ai_interval": CFG["scan_interval_minutes"] * CFG.get("ai_scan_interval_multiplier", 5),
             "arb_opps": SHARED["_arb_opportunities"],
             "cross_arb_opps": SHARED.get("_cross_arb_opportunities", 0),
-            "quickflip_active": SHARED.get("_quickflip_active", 0)}
+            "quickflip_active": SHARED.get("_quickflip_active", 0),
+            "scan_progress": SHARED.get("_scan_progress", {"phase": "idle", "step": "", "pct": 0, "total_phases": 0, "current_phase": 0}),
+            "scan_summary": SHARED.get("_scan_summary", "")}
 
     def _markets(self):
         return SHARED.get("_cached_markets", [])

@@ -134,6 +134,9 @@ SHARED = {
     "_cross_arb_opportunities": 0, "_quickflip_active": 0,
     "_cross_platform_risk": {},
     "dry_run": True,
+    # Scan progress tracking
+    "_scan_progress": {"phase": "idle", "step": "", "pct": 0, "total_phases": 4, "current_phase": 0},
+    "_scan_summary": "",
 }
 SHARED_LOCK = threading.Lock()
 
