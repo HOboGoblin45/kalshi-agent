@@ -138,7 +138,7 @@ SHARED = {
     "_scan_progress": {"phase": "idle", "step": "", "pct": 0, "total_phases": 4, "current_phase": 0},
     "_scan_summary": "",
 }
-SHARED_LOCK = threading.Lock()
+SHARED_LOCK = threading.RLock()
 
 # NWS grid coordinates for weather markets
 CITY_COORDS = {
