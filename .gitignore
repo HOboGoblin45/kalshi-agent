@@ -8,6 +8,7 @@ kalshi-agent/kalshi-config.json
 # Key files
 *.key
 *.key.txt
+your-kalshi-key.txt
 
 # Cache files
 market-matches.json
