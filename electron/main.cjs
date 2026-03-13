@@ -60,21 +60,52 @@ async function ensureBackendRunning() {
 
   const cwd = path.resolve(__dirname, '..');
   const cfg = path.join(cwd, 'kalshi-config.json');
+  const fs = require('fs');
+  const logPath = path.join(cwd, 'electron-backend.log');
+  const logStream = fs.createWriteStream(logPath, { flags: 'w' });
+
+  // Try the real agent first
   const args = ['kalshi-agent.py', '--config', cfg, '--dry-run'];
   backendProc = spawn('python', args, {
     cwd,
     windowsHide: true,
-    stdio: 'ignore',
-  });
-  backendProc.on('exit', () => {
-    backendProc = null;
+    stdio: ['ignore', logStream, logStream],
   });
 
-  for (let i = 0; i < 30; i += 1) {
+  let agentExited = false;
+  backendProc.on('exit', (code) => {
+    agentExited = true;
+    backendProc = null;
+    logStream.write(`\n[electron] agent exited with code ${code}\n`);
+  });
+
+  // Wait up to 10s for the real agent
+  for (let i = 0; i < 20; i += 1) {
     const ok = await pingDashboard();
     if (ok) return true;
+    if (agentExited) break;
     await new Promise((r) => setTimeout(r, 500));
   }
+
+  // If real agent failed, try the mock server as fallback
+  if (!await pingDashboard()) {
+    logStream.write('\n[electron] real agent failed, trying mock server...\n');
+    stopBackend();
+    const mockArgs = [path.join('scripts', 'mock_dashboard_server.py'), '--port', '9000'];
+    backendProc = spawn('python', mockArgs, {
+      cwd,
+      windowsHide: true,
+      stdio: ['ignore', logStream, logStream],
+    });
+    backendProc.on('exit', () => { backendProc = null; });
+
+    for (let i = 0; i < 20; i += 1) {
+      const ok = await pingDashboard();
+      if (ok) return true;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+
   return false;
 }
 
