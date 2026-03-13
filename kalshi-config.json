@@ -1,6 +1,6 @@
 {
   "kalshi_api_key_id": "8221f25c-a3db-473f-aa5e-06c68be49f50",
-  "kalshi_private_key_path": "/home/user/kalshi-agent/your-kalshi-key.txt",
+  "kalshi_private_key_path": "your-kalshi-key.txt",
   "anthropic_api_key": "sk-ant-api03-YgFWeoTUFopq5qiMrRdVDiGQctHE4qp889zcfMfvUj6VJXIYxGoSVXbdoPZE6yNRuM22qbNpGusH-EJCzBnpeg-GfPIPAAA",
   "polymarket_private_key": "0x2038b5f13adbf9d68d7387ad50a4b0d400089ca66a0319c433496422e1e17384",
   "polymarket_api_key": "82de3feb-310d-bd87-d5ee-72468b5f51d3",
@@ -12,7 +12,7 @@
   "scan_interval_minutes": 3,
   "ai_scan_interval_multiplier": 5,
   "dashboard_port": 9000,
-  "dashboard_host": "0.0.0.0",
+  "dashboard_host": "127.0.0.1",
   "dashboard_token": "",
   "polymarket_enabled": true,
   "cross_arb_enabled": true,

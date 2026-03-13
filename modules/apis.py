@@ -31,8 +31,11 @@ class KalshiAPI:
     def __init__(self):
         self.key_id = CFG["kalshi_api_key_id"]
         self.base = BASE_URLS.get(CFG["environment"], BASE_URLS["prod"])
+        key_path = CFG["kalshi_private_key_path"]
+        if not os.path.isabs(key_path):
+            key_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", key_path)
         self.pk = serialization.load_pem_private_key(
-            open(CFG["kalshi_private_key_path"], "rb").read(), password=None, backend=default_backend())
+            open(key_path, "rb").read(), password=None, backend=default_backend())
 
     def _sign(self, ts, method, path):
         msg = f"{ts}{method}{path.split('?')[0]}".encode()
