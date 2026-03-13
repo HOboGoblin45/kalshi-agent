@@ -66,6 +66,25 @@ class Agent:
                 self.poly_enabled = False
         self.exit_mgr = ExitManager(self.api, self.risk, self.notifier, poly_api=self.poly_api)
 
+    @staticmethod
+    def _clean_title(m):
+        """Return a readable title. Multi-outcome Kalshi markets often have titles
+        like 'yes Leipzig,yes Crystal Palace,...' which are outcome lists, not
+        real titles. Fall back to event_ticker-based title in that case."""
+        title = m.get("title") or ""
+        # Heuristic: if title starts with 'yes ' or 'no ' and has lots of commas,
+        # it's an outcome list, not a real question
+        t_lower = title.lower().strip()
+        if t_lower.startswith(("yes ", "no ")) and title.count(",") >= 2:
+            # Build a nicer title from event_ticker / subtitle
+            et = m.get("event_ticker") or m.get("ticker") or ""
+            sub = m.get("subtitle") or ""
+            if sub:
+                return sub
+            # Convert ticker like KXNVESPORTSMULTIGAMEEXTE to something readable
+            return et.replace("-", " ").replace("_", " ").strip() or title
+        return title
+
     def _is_ai_scan_due(self):
         mult = CFG.get("ai_scan_interval_multiplier", 5)
         return self._scan_number % mult == 0
@@ -156,13 +175,20 @@ class Agent:
         # ── LOAD MARKETS ──
         self._update_progress(0, "Initializing", "Loading markets...", total_phases)
         mkts = self.cache.get()
-        # Store markets for frontend API
+        # Score & rank all markets, then cache the best ones for the dashboard
+        scored_short, scored_long = filter_and_rank(mkts)
+        all_scored = scored_short + scored_long
+        all_scored.sort(key=lambda x: x.get("_score", 0), reverse=True)
+        _CACHE_KEYS = ["ticker", "title", "subtitle", "category", "yes_bid", "no_bid",
+                       "last_price", "volume", "volume_24h", "close_time", "status", "event_ticker",
+                       "yes_ask", "no_ask", "open_time", "result", "platform"]
         with SHARED_LOCK:
             SHARED["_cached_markets"] = [
-                {k: m.get(k) for k in ["ticker", "title", "subtitle", "category", "yes_bid", "no_bid",
-                 "last_price", "volume", "volume_24h", "close_time", "status", "event_ticker",
-                 "yes_ask", "no_ask", "open_time", "result", "platform"]}
-                for m in mkts[:100]
+                {**{k: m.get(k) for k in _CACHE_KEYS},
+                 "category": m.get("_category", m.get("category", "")),
+                 "title": self._clean_title(m),
+                 "_score": m.get("_score", 0)}
+                for m in (all_scored if all_scored else mkts)[:200]
             ]
         poly_mkts = []
         if self.poly_enabled and self.poly_cache:
