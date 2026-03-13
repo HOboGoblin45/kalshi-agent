@@ -87,40 +87,40 @@ export default function Markets() {
   const handleSearch = (val: string) => { setSearch(val); setPage(0); };
 
   return (
-    <div className="p-3 md:p-4 max-w-7xl mx-auto">
+    <div className="p-4 md:p-6 max-w-7xl mx-auto">
       {/* Header */}
-      <div className="flex items-center gap-2 mb-3">
-        <h1 className="text-sm font-bold uppercase tracking-wider term-glow">+--- MARKETS ---+</h1>
+      <div className="flex items-center gap-3 mb-4">
+        <h1 className="text-lg font-bold uppercase tracking-wider term-glow">+--- MARKETS ---+</h1>
         {agentState && (
-          <span className={`text-xs font-bold ${agentState.enabled ? "text-accent-green" : "text-accent-red"}`}>
+          <span className={`text-base font-bold ${agentState.enabled ? "text-accent-green" : "text-accent-red"}`}>
             {agentState.enabled ? "[LIVE]" : "[OFF]"}
           </span>
         )}
-        <span className="text-xs text-text-secondary ml-auto">
-          {filtered.length} markets
+        <span className="text-sm text-text-secondary ml-auto">
+          {filtered.length} results
         </span>
       </div>
 
       {/* Search + Sort row */}
-      <div className="flex gap-2 mb-4">
+      <div className="flex gap-3 mb-5">
         <div className="relative flex-1">
           <Search
-            size={14}
-            className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-tertiary"
+            size={18}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary"
           />
           <input
             type="text"
             placeholder="grep markets..."
             value={search}
             onChange={(e) => handleSearch(e.target.value)}
-            className="w-full h-9 pl-8 pr-3 bg-bg-surface border border-border-subtle text-sm text-accent-green placeholder:text-text-tertiary focus:outline-none focus:border-accent-green"
+            className="w-full h-11 pl-10 pr-4 bg-bg-surface border border-border-subtle text-base text-accent-green placeholder:text-text-tertiary focus:outline-none focus:border-accent-green"
           />
         </div>
         <div className="relative">
           <select
             value={sortBy}
             onChange={(e) => { setSortBy(e.target.value as SortKey); setPage(0); }}
-            className="h-9 pl-2 pr-7 bg-bg-surface border border-border-subtle text-xs text-accent-green appearance-none cursor-pointer focus:outline-none focus:border-accent-green"
+            className="h-11 pl-3 pr-8 bg-bg-surface border border-border-subtle text-sm text-accent-green appearance-none cursor-pointer focus:outline-none focus:border-accent-green"
           >
             <option value="default">sort:default</option>
             <option value="score">sort:score</option>
@@ -128,7 +128,7 @@ export default function Markets() {
             <option value="yes_price">sort:yes%</option>
             <option value="expiry">sort:expiry</option>
           </select>
-          <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-text-tertiary pointer-events-none" />
+          <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-tertiary pointer-events-none" />
         </div>
       </div>
 
@@ -147,7 +147,7 @@ export default function Markets() {
       )}
 
       {/* Market grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         {paged.map((m) => {
           const yesPrice = m.display_price ?? m.yes_bid ?? m.last_price ?? 50;
           const noPrice = 100 - yesPrice;
@@ -165,35 +165,35 @@ export default function Markets() {
               onClick={() => navigate(`/market/${encodeURIComponent(m.ticker)}`)}
             >
               {/* Category tag + score + ticker */}
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-1.5">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
                   {m.category ? (
-                    <span className="text-[10px] uppercase tracking-wider text-text-tertiary bg-bg-elevated px-1.5 py-0.5">
+                    <span className="text-xs uppercase tracking-wider text-text-tertiary bg-bg-elevated px-2 py-1">
                       {m.category}
                     </span>
                   ) : (
-                    <span className="text-[10px] text-text-tertiary truncate max-w-[120px]">
+                    <span className="text-xs text-text-tertiary truncate max-w-[180px]">
                       {m.ticker}
                     </span>
                   )}
                   {(m._score ?? 0) > 0 && (
-                    <span className={`text-[10px] px-1.5 py-0.5 ${(m._score ?? 0) >= 10 ? "text-accent-green bg-accent-green/10" : (m._score ?? 0) >= 6 ? "text-accent-gold bg-accent-gold/10" : "text-text-tertiary bg-bg-elevated"}`}>
+                    <span className={`text-xs px-2 py-1 ${(m._score ?? 0) >= 10 ? "text-accent-green bg-accent-green/10" : (m._score ?? 0) >= 6 ? "text-accent-gold bg-accent-gold/10" : "text-text-tertiary bg-bg-elevated"}`}>
                       s:{m._score}
                     </span>
                   )}
                 </div>
                 {!hasLiquidity && (
-                  <span className="text-[10px] text-text-tertiary bg-bg-elevated px-1.5 py-0.5">NO LIQ</span>
+                  <span className="text-xs text-text-tertiary bg-bg-elevated px-2 py-1">NO LIQ</span>
                 )}
               </div>
 
               {/* Title */}
-              <h3 className="text-sm text-accent-green font-semibold mb-3 line-clamp-2 leading-snug group-hover:term-glow">
+              <h3 className="text-base text-accent-green font-semibold mb-4 line-clamp-2 leading-snug group-hover:term-glow">
                 {m.title}
               </h3>
 
               {/* Price bar */}
-              <div className="price-bar mb-2">
+              <div className="price-bar mb-3">
                 <div
                   className={`price-bar-fill ${color}`}
                   style={{ width: `${yesPrice}%` }}
@@ -201,19 +201,19 @@ export default function Markets() {
               </div>
 
               {/* YES / NO prices - prominent */}
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-baseline gap-1.5">
-                  <span className="text-xs text-text-secondary">YES</span>
-                  <span className={`text-lg font-bold ${priceTextClass(yesPrice)}`}>{yesPrice}c</span>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-sm text-text-secondary">YES</span>
+                  <span className={`text-2xl font-bold ${priceTextClass(yesPrice)}`}>{yesPrice}c</span>
                 </div>
-                <div className="flex items-baseline gap-1.5">
-                  <span className="text-xs text-text-secondary">NO</span>
-                  <span className={`text-lg font-bold ${priceTextClass(noPrice)}`}>{noPrice}c</span>
+                <div className="flex items-baseline gap-2">
+                  <span className="text-sm text-text-secondary">NO</span>
+                  <span className={`text-2xl font-bold ${priceTextClass(noPrice)}`}>{noPrice}c</span>
                 </div>
               </div>
 
               {/* Metadata row */}
-              <div className="flex items-center justify-between text-xs text-text-tertiary border-t border-border-subtle pt-2">
+              <div className="flex items-center justify-between text-sm text-text-tertiary border-t border-border-subtle pt-3">
                 <span>vol: {formatVol(m.volume)}</span>
                 <span>exp: {formatCloseDate(m.close_time)}</span>
               </div>
@@ -224,11 +224,11 @@ export default function Markets() {
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-3 mt-4 text-xs">
+        <div className="flex items-center justify-center gap-4 mt-6 text-sm">
           <button
             onClick={() => setPage(Math.max(0, page - 1))}
             disabled={page === 0}
-            className="px-2 py-1 border border-border-subtle text-text-secondary hover:text-accent-green hover:border-accent-green disabled:opacity-30 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 border border-border-subtle text-text-secondary hover:text-accent-green hover:border-accent-green disabled:opacity-30 disabled:cursor-not-allowed"
           >
             &lt; prev
           </button>
@@ -238,7 +238,7 @@ export default function Markets() {
           <button
             onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
             disabled={page >= totalPages - 1}
-            className="px-2 py-1 border border-border-subtle text-text-secondary hover:text-accent-green hover:border-accent-green disabled:opacity-30 disabled:cursor-not-allowed"
+            className="px-3 py-1.5 border border-border-subtle text-text-secondary hover:text-accent-green hover:border-accent-green disabled:opacity-30 disabled:cursor-not-allowed"
           >
             next &gt;
           </button>
