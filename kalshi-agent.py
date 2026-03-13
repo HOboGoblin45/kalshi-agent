@@ -181,7 +181,7 @@ class Agent:
                         log.info(f"  CROSS-ARB: {ca['title'][:40]} -- {ca['strategy_desc']} -- profit: {ca['profit_cents']:.1f}c")
                         try:
                                 result = execute_cross_arb(self.api, self.poly_api, ca,
-                                    max_cost=CFG.get("cross_arb_max_cost", 10.0), dry_run=False)
+                                    max_cost=CFG.get("cross_arb_max_cost", 10.0), dry_run=CFG.get("dry_run", True))
                                 if result["success"]:
                                     log.info(f"  CROSS-ARB EXECUTED: {result['contracts']}x profit=${result['expected_profit']:.2f}")
                                     self.risk.record(ca["kalshi_ticker"], ca["title"], "cross_arb",
@@ -219,8 +219,11 @@ class Agent:
             for a in arb_opps[:3]:
                 log.info(f"  ARB: {a['ticker']} -- yes:{a['yes_price']:.0f}c + no:{a['no_price']:.0f}c = {a['total_cost']:.0f}c -- profit: {a['profit_cents']:.1f}c")
                 try:
-                    self.api.place_order(a["ticker"], "yes", 1, int(a["yes_price"]))
-                    self.api.place_order(a["ticker"], "no", 1, int(a["no_price"]))
+                    if CFG.get("dry_run", True):
+                        log.info(f"  ARB DRY-RUN: would place YES+NO on {a['ticker']}")
+                    else:
+                        self.api.place_order(a["ticker"], "yes", 1, int(a["yes_price"]))
+                        self.api.place_order(a["ticker"], "no", 1, int(a["no_price"]))
                     log.info(f"  ARB EXECUTED: {a['ticker']}")
                     self.risk.record(a["ticker"], a["title"], "arb", 1, int(a["total_cost"]),
                         99, int(a["profit_cents"]), "Arbitrage: YES+NO < $1", 0, 0)
@@ -253,16 +256,22 @@ class Agent:
                                 platform = qf.get("platform", "kalshi")
                                 tk = m.get("ticker", "")
                                 if platform == "kalshi" and tk:
-                                    self.api.place_order(tk, qf["side"], qf_contracts, qf["entry_price"])
-                                    log.info(f"  QF EXECUTED: {qf['side']} {qf_contracts}x @{qf['entry_price']}c on Kalshi")
+                                    if CFG.get("dry_run", True):
+                                        log.info(f"  QF DRY-RUN: {qf['side']} {qf_contracts}x @{qf['entry_price']}c on Kalshi")
+                                    else:
+                                        self.api.place_order(tk, qf["side"], qf_contracts, qf["entry_price"])
+                                        log.info(f"  QF EXECUTED: {qf['side']} {qf_contracts}x @{qf['entry_price']}c on Kalshi")
                                     self.risk.record(tk, m.get("title", ""), qf["side"], qf_contracts,
                                         qf["entry_price"], 50, int(qf["potential_roi"]),
                                         f"Quick-flip: target {qf['target_price']}c", 0, 0, platform="kalshi")
                                 elif platform == "polymarket" and self.poly_api and self.poly_api.is_trading_enabled:
                                     token = m.get("token_id", "")
                                     if token:
-                                        self.poly_api.place_order(token, qf["side"], qf_contracts, qf["entry_price"])
-                                        log.info(f"  QF EXECUTED: {qf['side']} {qf_contracts}x @{qf['entry_price']}c on Polymarket")
+                                        if CFG.get("dry_run", True):
+                                            log.info(f"  QF DRY-RUN: {qf['side']} {qf_contracts}x @{qf['entry_price']}c on Polymarket")
+                                        else:
+                                            self.poly_api.place_order(token, qf["side"], qf_contracts, qf["entry_price"])
+                                            log.info(f"  QF EXECUTED: {qf['side']} {qf_contracts}x @{qf['entry_price']}c on Polymarket")
                                         self.risk.record(tk, m.get("title", ""), qf["side"], qf_contracts,
                                             qf["entry_price"], 50, int(qf["potential_roi"]),
                                             f"Quick-flip: target {qf['target_price']}c", 0, 0, platform="polymarket")
@@ -466,14 +475,17 @@ class Agent:
 
             log.info(f"  * EXECUTE: BUY {r['side'].upper()} {contracts}x {tk} @{bp}c [{cat}] on {trade_platform.upper()}")
             try:
-                if trade_platform == "kalshi":
-                    res = self.api.place_order(tk, side_lower, contracts, bp)
-                    oid = res.get("order", {}).get("order_id", "?")
-                    log.info(f"  OK: order {oid} -- {res.get('order', {}).get('status', '?')}")
-                elif trade_platform == "polymarket" and self.poly_api:
-                    token = poly_match.get("token_id", "") if side_lower == "yes" else poly_match.get("no_token_id", poly_match.get("token_id", ""))
-                    res = self.poly_api.place_order(token, side_lower, contracts, bp)
-                    log.info(f"  OK: Polymarket order placed")
+                if CFG.get("dry_run", True):
+                    log.info("  DRY-RUN: order not sent")
+                else:
+                    if trade_platform == "kalshi":
+                        res = self.api.place_order(tk, side_lower, contracts, bp)
+                        oid = res.get("order", {}).get("order_id", "?")
+                        log.info(f"  OK: order {oid} -- {res.get('order', {}).get('status', '?')}")
+                    elif trade_platform == "polymarket" and self.poly_api:
+                        token = poly_match.get("token_id", "") if side_lower == "yes" else poly_match.get("no_token_id", poly_match.get("token_id", ""))
+                        res = self.poly_api.place_order(token, side_lower, contracts, bp)
+                        log.info(f"  OK: Polymarket order placed")
 
                 self.risk.record(tk, mkt.get("title", ""), side_lower, contracts, bp,
                     r["confidence"], r["edge"], r["evidence"], r["bull_prob"], r["bear_prob"],
@@ -535,6 +547,9 @@ def main():
     ap.add_argument("--config", type=str)
     ap.add_argument("--scan-once", action="store_true"); ap.add_argument("--no-dashboard", action="store_true")
     ap.add_argument("--report", action="store_true", help="Generate performance report and exit")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="Never place live orders")
+    mode.add_argument("--live", action="store_true", help="Allow live order placement")
     args = ap.parse_args()
     if args.config:
         with open(args.config) as f: CFG.update(json.load(f))
@@ -552,8 +567,15 @@ def main():
     for env_var, cfg_key in env_overrides.items():
         val = os.environ.get(env_var)
         if val: CFG[cfg_key] = val
-    # Strip any dry_run from config -- always trade live
-    CFG.pop("dry_run", None)
+    if args.dry_run:
+        CFG["dry_run"] = True
+    elif args.live:
+        CFG["dry_run"] = False
+    else:
+        CFG["dry_run"] = bool(CFG.get("dry_run", True))
+    with SHARED_LOCK:
+        SHARED["dry_run"] = CFG["dry_run"]
+    log.info(f"Trading mode: {'DRY-RUN' if CFG['dry_run'] else 'LIVE'}")
     if not CFG["kalshi_api_key_id"] or not CFG["anthropic_api_key"]:
         print("\n  Error: --config with API keys required (or set KALSHI_API_KEY_ID / ANTHROPIC_API_KEY env vars)\n"); sys.exit(1)
     # Auto-enable Polymarket if keys are provided

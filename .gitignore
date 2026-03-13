@@ -27,3 +27,8 @@ Thumbs.db
 # Frontend
 node_modules
 *.local
+
+# Desktop packaging outputs
+release/
+.store.env
+build/appx.generated.json

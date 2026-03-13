@@ -5,8 +5,19 @@ export function usePolling(intervalMs = 5000) {
   const fetchAll = useStore((s) => s.fetchAll);
 
   useEffect(() => {
-    fetchAll();
-    const id = setInterval(fetchAll, intervalMs);
-    return () => clearInterval(id);
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = async () => {
+      await fetchAll();
+      if (cancelled) return;
+      timeoutId = setTimeout(tick, intervalMs);
+    };
+
+    void tick();
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, [fetchAll, intervalMs]);
 }

@@ -1,6 +1,8 @@
 """Web dashboard + React frontend server for monitoring agent activity."""
 import json, os, threading, mimetypes
 import http.server
+from urllib.parse import unquote
+import hmac
 
 from modules.config import CFG, SHARED, SHARED_LOCK, log
 
@@ -22,10 +24,38 @@ MIME_TYPES = {
 
 
 class DashHandler(http.server.BaseHTTPRequestHandler):
+    def _allowed_origins(self):
+        host = CFG.get("dashboard_host", "127.0.0.1")
+        port = CFG.get("dashboard_port", 9000)
+        return {
+            f"http://localhost:{port}",
+            f"http://127.0.0.1:{port}",
+            f"http://{host}:{port}",
+        }
+
+    def _is_local_origin(self, origin):
+        if not origin:
+            return True
+        return origin in self._allowed_origins()
+
+    def _require_toggle_auth(self):
+        origin = self.headers.get("Origin", "")
+        if not self._is_local_origin(origin):
+            return False
+
+        token = CFG.get("dashboard_token", "")
+        if not token:
+            return True
+        got = self.headers.get("X-Dashboard-Token", "")
+        return hmac.compare_digest(got, token)
+
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
+        origin = self.headers.get("Origin", "")
+        if self._is_local_origin(origin) and origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Dashboard-Token")
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -49,6 +79,11 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == '/api/toggle':
+            if not self._require_toggle_auth():
+                self.send_response(403)
+                self._cors()
+                self.end_headers()
+                return
             with SHARED_LOCK:
                 SHARED["enabled"] = not SHARED["enabled"]
                 enabled = SHARED["enabled"]
@@ -60,11 +95,22 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
 
     def _serve_static(self):
         """Serve files from dist/. For SPA routes, fall back to index.html."""
-        path = self.path.split("?")[0]  # strip query string
+        path = unquote(self.path.split("?")[0])  # strip query string
         if path == "/":
             path = "/index.html"
 
-        file_path = os.path.join(_DIST_DIR, path.lstrip("/"))
+        rel = os.path.normpath(path.lstrip("/\\"))
+        if rel.startswith(".."):
+            self.send_response(403)
+            self.end_headers()
+            return
+
+        dist_abs = os.path.abspath(_DIST_DIR)
+        file_path = os.path.abspath(os.path.join(dist_abs, rel))
+        if not (file_path == dist_abs or file_path.startswith(dist_abs + os.sep)):
+            self.send_response(403)
+            self.end_headers()
+            return
 
         # If file exists, serve it
         if os.path.isfile(file_path):
@@ -109,6 +155,7 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
             "wagered": "$0", "day_trades": 0, "day_pnl": "$0", "exposure": "$0", "paused": False})
         return {"enabled": SHARED["enabled"], "status": SHARED["status"], "balance": SHARED["balance"],
             "poly_balance": SHARED.get("poly_balance", 0), "poly_enabled": SHARED.get("poly_enabled", False),
+            "dry_run": SHARED.get("dry_run", CFG.get("dry_run", True)),
             "environment": CFG["environment"].upper(), "risk": risk, "trades": SHARED.get("_trades", [])[-20:],
             "log": SHARED["log_lines"][-100:], "last_scan": SHARED["last_scan"], "next_scan": SHARED["next_scan"],
             "max_daily": CFG["max_daily_trades"], "scan_count": SHARED["scan_count"],
@@ -133,11 +180,12 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
 
 def start_dashboard():
     port = CFG.get("dashboard_port", 9000)
+    host = CFG.get("dashboard_host", "127.0.0.1")
 
     if not os.path.isdir(_DIST_DIR):
         log.warning(f"Frontend not built yet (no dist/ folder). Run 'npm run build' first.")
-        log.warning(f"API endpoints will still work at http://localhost:{port}/api/")
+        log.warning(f"API endpoints will still work at http://{host}:{port}/api/")
 
-    srv = http.server.HTTPServer(("0.0.0.0", port), DashHandler)
+    srv = http.server.HTTPServer((host, port), DashHandler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    log.info(f"Dashboard: http://localhost:{port}")
+    log.info(f"Dashboard: http://{host}:{port}")

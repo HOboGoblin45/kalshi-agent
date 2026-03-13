@@ -7,6 +7,7 @@ import Positions from "./pages/Positions";
 import Alerts from "./pages/Alerts";
 import MarketDetail from "./pages/MarketDetail";
 import Profile from "./pages/Profile";
+import NotFound from "./pages/NotFound";
 import { usePolling } from "./hooks/usePolling";
 
 function AppRoutes() {
@@ -21,6 +22,7 @@ function AppRoutes() {
         <Route path="/alerts" element={<Alerts />} />
         <Route path="/market/:id" element={<MarketDetail />} />
         <Route path="/profile" element={<Profile />} />
+        <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>
   );

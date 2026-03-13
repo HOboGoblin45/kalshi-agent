@@ -7,6 +7,7 @@ export interface AgentState {
   poly_balance: number;
   poly_enabled: boolean;
   environment: string;
+  dry_run?: boolean;
   risk: {
     total: number;
     wins: number;

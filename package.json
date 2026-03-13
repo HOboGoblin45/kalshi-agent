@@ -1,13 +1,24 @@
 {
   "name": "kalshi-agent",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "description": "Kalshi Agent desktop dashboard and automation runtime",
+  "main": "electron/main.cjs",
+  "author": "Kalshi Agent Team",
+  "license": "UNLICENSED",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "typecheck": "tsc -b --pretty false",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check": "npm run lint && npm run build",
+    "desktop:dev": "electron .",
+    "desktop:pack": "npm run build && electron-builder --dir",
+    "desktop:dist": "npm run build && electron-builder",
+    "desktop:dist:win": "npm run build && electron-builder --win nsis zip",
+    "desktop:dist:store": "npm run build && node scripts/generate-appx-config.mjs && electron-builder --config build/appx.generated.json --win appx"
   },
   "dependencies": {
     "framer-motion": "^12.35.2",
@@ -25,6 +36,8 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
+    "electron": "^36.0.0",
+    "electron-builder": "^25.1.8",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
@@ -33,5 +46,59 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.48.0",
     "vite": "^7.3.1"
+  },
+  "build": {
+    "appId": "com.kalshiagent.desktop",
+    "productName": "Kalshi Agent Desktop",
+    "files": [
+      "electron/**/*",
+      "dist/**/*",
+      "modules/**/*",
+      "kalshi-agent.py",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "appx",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "appx": {
+      "applicationId": "KalshiAgentDesktop",
+      "displayName": "Kalshi Agent Desktop",
+      "publisher": "CN=00000000-0000-0000-0000-000000000000",
+      "publisherDisplayName": "Kalshi Agent Team",
+      "identityName": "00000KalshiAgentDesktop",
+      "backgroundColor": "#000000",
+      "artifactName": "${productName}-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
   }
 }

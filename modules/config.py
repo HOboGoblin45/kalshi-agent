@@ -93,6 +93,9 @@ DEFAULTS = {
     "trade_log": "kalshi-trades.json",
     "calibration_log": "kalshi-calibration.json",
     "dashboard_port": 9000,
+    "dashboard_host": "127.0.0.1",
+    "dashboard_token": "",
+    "dry_run": True,
     "fred_api_key": "",
     # Email notifications
     "email_enabled": False,
@@ -128,6 +131,7 @@ SHARED = {
     "poly_balance": 0, "poly_enabled": False,
     "_cross_arb_opportunities": 0, "_quickflip_active": 0,
     "_cross_platform_risk": {},
+    "dry_run": True,
 }
 SHARED_LOCK = threading.Lock()
 

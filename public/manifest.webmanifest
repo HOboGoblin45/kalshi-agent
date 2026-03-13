@@ -1,0 +1,18 @@
+{
+  "name": "Kalshi Agent Dashboard",
+  "short_name": "Kalshi Agent",
+  "description": "Monitor and control the Kalshi Agent with live risk, positions, and execution telemetry.",
+  "display": "standalone",
+  "start_url": "/",
+  "scope": "/",
+  "background_color": "#000000",
+  "theme_color": "#0A84FF",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

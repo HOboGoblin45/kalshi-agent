@@ -1,73 +1,95 @@
-# React + TypeScript + Vite
+# Kalshi Agent Dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Production-grade monitoring and control dashboard for the Kalshi AI trading agent with cross-platform support (Kalshi + Polymarket), risk telemetry, and compact real-time UI.
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- Live portfolio, risk, and trading telemetry
+- Dashboard controls for enabling/disabling agent scans
+- Arbitrage and quick-flip visibility
+- Compact, mobile-aware UI with persistent preferences
+- Dry-run and live trading mode support from backend
+- Local dashboard security defaults (localhost host binding)
 
-## React Compiler
+## Project Structure
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- `kalshi-agent.py`: main backend runtime and orchestration
+- `modules/`: APIs, dashboard server, risk, scoring, arbitrage, notifier
+- `src/`: React + TypeScript frontend
+- `tests/`: Python test suite
 
-## Expanding the ESLint configuration
+## Quick Start
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+### 1) Install dependencies
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+pip install -r requirements.txt
+npm install
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+### 2) Configure credentials
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+- Copy `.env.example` values or update `kalshi-config.json`
+- Ensure required keys are available:
+  - `kalshi_api_key_id`
+  - `kalshi_private_key_path`
+  - `anthropic_api_key`
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### 3) Run in safe mode first
+
+```bash
+python kalshi-agent.py --config kalshi-config.json --dry-run
 ```
+
+Dashboard URL (default): `http://127.0.0.1:9000`
+
+## Frontend Commands
+
+```bash
+npm run dev
+npm run lint
+npm run build
+npm run preview
+npm run check
+```
+
+## Desktop App (Electron)
+
+```bash
+npm run desktop:dev
+npm run desktop:pack
+npm run desktop:dist:win
+npm run desktop:dist:store
+```
+
+- Windows launcher: `Start Kalshi Desktop.bat`
+- Full local launcher (backend + desktop): `Start Kalshi Full Desktop.bat`
+- Full packaging guide: [DESKTOP_PACKAGING.md](DESKTOP_PACKAGING.md)
+- Local use does not require a persistent external server; backend runs on your machine and desktop app can auto-start it in dry-run mode.
+- For Store builds, copy `.store.env.example` to `.store.env` and fill Partner Center identity values before `desktop:dist:store`.
+
+## Release Safety Notes
+
+- Default mode is `dry_run=true`
+- Use `--live` explicitly for live order placement
+- Dashboard toggle endpoint is constrained to local-origin requests
+- Keep `dashboard_token` configured if exposing dashboard beyond localhost
+
+## Testing
+
+```bash
+pytest -q
+npm run check
+```
+
+## App Store / Distribution
+
+Use the release checklist in [APP_STORE_RELEASE_CHECKLIST.md](APP_STORE_RELEASE_CHECKLIST.md) before submitting binaries or packaged builds.
+
+## Compliance Documents
+
+- [PRIVACY.md](PRIVACY.md)
+
+## Disclaimer
+
+This software is for informational and automation support purposes only and does not constitute financial advice.
