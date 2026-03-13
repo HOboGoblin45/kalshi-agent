@@ -30,6 +30,14 @@ export interface AgentState {
   arb_opps: number;
   cross_arb_opps: number;
   quickflip_active: number;
+  scan_progress: {
+    phase: string;
+    step: string;
+    pct: number;
+    total_phases: number;
+    current_phase: number;
+  };
+  scan_summary: string;
 }
 
 export interface Trade {

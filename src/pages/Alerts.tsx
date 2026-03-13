@@ -4,6 +4,8 @@ export default function Alerts() {
   const agentState = useStore((s) => s.agentState);
   const logs = agentState?.log || [];
   const recentLogs = logs.slice().reverse().slice(0, 60);
+  const progress = agentState?.scan_progress;
+  const isScanning = progress && progress.phase !== "idle" && progress.pct < 100;
 
   return (
     <div className="p-2 md:p-3 max-w-4xl mx-auto">
@@ -17,6 +19,43 @@ export default function Alerts() {
             <Info label="NEXT_SCAN" value={agentState.next_scan} />
             <Info label="SCAN_COUNT" value={String(agentState.scan_count)} />
           </div>
+        </div>
+      )}
+
+      {/* Scan Progress Bar */}
+      {isScanning && progress && (
+        <div className="card mb-3">
+          <div className="flex items-center justify-between text-[10px] mb-1.5">
+            <span className="text-accent-green font-bold uppercase tracking-wider">
+              {progress.phase}
+            </span>
+            <span className="text-text-tertiary">
+              Phase {progress.current_phase}/{progress.total_phases} -- {progress.pct}%
+            </span>
+          </div>
+          <div className="w-full h-2 bg-bg-elevated border border-border-subtle overflow-hidden">
+            <div
+              className="h-full bg-accent-green transition-all duration-500 ease-out"
+              style={{ width: `${progress.pct}%` }}
+            />
+          </div>
+          {progress.step && (
+            <div className="text-[10px] text-text-tertiary mt-1 animate-pulse">
+              {progress.step}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* AI Scan Summary */}
+      {agentState?.scan_summary && (
+        <div className="card mb-3 border-accent-green/30">
+          <div className="text-[10px] text-accent-green font-bold uppercase tracking-wider mb-1">
+            +--- AI SCAN SUMMARY ---+
+          </div>
+          <p className="text-[11px] text-text-secondary leading-relaxed whitespace-pre-wrap">
+            {agentState.scan_summary}
+          </p>
         </div>
       )}
 

@@ -117,7 +117,20 @@ function TopBar() {
             <span className={`text-[10px] font-bold ${agentState.enabled ? "text-accent-green pulse-green" : "text-accent-red"}`}>
               {agentState.enabled ? "[OK]" : "[OFF]"}
             </span>
-            <span className="text-[10px] text-text-tertiary">{agentState.status}</span>
+            {agentState.scan_progress && agentState.scan_progress.phase !== "idle" && agentState.scan_progress.pct < 100 ? (
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-accent-green">{agentState.scan_progress.phase}</span>
+                <div className="w-16 h-1.5 bg-bg-elevated border border-border-subtle overflow-hidden">
+                  <div
+                    className="h-full bg-accent-green transition-all duration-500"
+                    style={{ width: `${agentState.scan_progress.pct}%` }}
+                  />
+                </div>
+                <span className="text-[10px] text-text-tertiary">{agentState.scan_progress.pct}%</span>
+              </div>
+            ) : (
+              <span className="text-[10px] text-text-tertiary">{agentState.status}</span>
+            )}
           </div>
         )}
         <span className="text-accent-green font-bold term-glow">
