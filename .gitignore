@@ -27,6 +27,8 @@ Thumbs.db
 # Frontend
 node_modules
 *.local
+test-results/
+playwright-report/
 
 # Desktop packaging outputs
 release/

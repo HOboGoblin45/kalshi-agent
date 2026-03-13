@@ -66,10 +66,10 @@ Frontend (React app)
 
 ## Execution Order
 
-- [ ] Update CSS (.card compact)
-- [ ] Update ProbabilityGauge default size
-- [ ] Update Layout compact design
-- [ ] Update Markets page density + remove hover scale
-- [ ] Build frontend: npm run build
-- [ ] Visual QA at :9000 (browser tool), capture screenshots
-- [ ] Iterate on feedback if any spacing/overlap remains
+- [x] Update CSS (.card compact)
+- [x] Update ProbabilityGauge default size
+- [x] Update Layout compact design
+- [x] Update Markets page density + remove hover scale
+- [x] Build frontend: npm run build
+- [x] Visual QA at :9000 (browser tool), capture screenshots
+- [x] Iterate on feedback if any spacing/overlap remains
