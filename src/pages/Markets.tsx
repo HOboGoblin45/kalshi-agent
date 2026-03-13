@@ -42,8 +42,8 @@ export default function Markets() {
   });
 
   return (
-    <div className="p-4 md:p-5 max-w-7xl mx-auto">
-      <div className="flex items-center gap-2 mb-4">
+    <div className="p-3 md:p-4 max-w-6xl mx-auto">
+      <div className="flex items-center gap-2 mb-3">
         <h1 className="text-2xl font-bold">Markets</h1>
         {agentState && (
           <div className="flex items-center gap-1.5">
@@ -63,12 +63,12 @@ export default function Markets() {
             </span>
           </div>
         )}
-        <span className="text-sm text-text-secondary ml-auto font-mono">
+        <span className="text-xs text-text-secondary ml-auto font-mono">
           {filtered.length} markets
         </span>
       </div>
 
-      <div className="relative mb-4">
+      <div className="relative mb-3">
         <Search
           size={16}
           className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary"
@@ -78,7 +78,7 @@ export default function Markets() {
           placeholder="Search markets..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="w-full h-11 pl-10 pr-4 rounded-xl bg-bg-surface border border-border-subtle text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-white/20"
+          className="w-full h-9 pl-10 pr-4 rounded-xl bg-bg-surface border border-border-subtle text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-white/20"
         />
       </div>
 
@@ -96,7 +96,7 @@ export default function Markets() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {filtered.map((m) => {
           const yesPrice = m.yes_bid ?? m.last_price ?? 50;
           return (

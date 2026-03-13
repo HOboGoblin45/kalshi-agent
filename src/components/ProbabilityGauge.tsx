@@ -5,7 +5,7 @@ interface Props {
   size?: number;
 }
 
-export default function ProbabilityGauge({ value, size = 44 }: Props) {
+export default function ProbabilityGauge({ value, size = 36 }: Props) {
   const r = (size - 8) / 2;
   const circumference = 2 * Math.PI * r;
   const offset = circumference - (value / 100) * circumference;
