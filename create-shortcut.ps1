@@ -3,7 +3,7 @@
 
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $batPath    = Join-Path $projectDir "start-kalshi.bat"
-$iconPath   = Join-Path $projectDir "build" "icon.ico"
+$iconPath   = Join-Path (Join-Path $projectDir "build") "icon.ico"
 $desktop    = [Environment]::GetFolderPath("Desktop")
 $lnkPath    = Join-Path $desktop "Kalshi Agent.lnk"
 
