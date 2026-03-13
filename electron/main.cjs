@@ -30,9 +30,9 @@ function loadFallbackPage() {
   <div class="card">
     <h1>[ERR] DASHBOARD UNAVAILABLE</h1>
     <p>the desktop shell is running but the backend is not reachable.</p>
-    <p>attempting to auto-start backend in dry-run mode...</p>
+    <p>attempting to auto-start backend...</p>
     <p>target: <code>${DASHBOARD_URL}</code></p>
-    <p style="margin-top:12px;color:#1f521f">$ python kalshi-agent.py --config kalshi-config.json --dry-run</p>
+    <p style="margin-top:12px;color:#1f521f">$ python kalshi-agent.py --config kalshi-config.json</p>
     <p><span class="blink">_</span></p>
   </div>
 </body>
@@ -64,8 +64,14 @@ async function ensureBackendRunning() {
   const logPath = path.join(cwd, 'electron-backend.log');
   const logFd = fs.openSync(logPath, 'w');
 
-  // Try the real agent first
-  const args = ['kalshi-agent.py', '--config', cfg, '--dry-run'];
+  // Read config to check dry_run setting
+  let dryRun = true;
+  try {
+    const cfgData = JSON.parse(fs.readFileSync(cfg, 'utf8'));
+    dryRun = cfgData.dry_run !== false; // default to dry-run unless explicitly false
+  } catch (_) {}
+
+  const args = ['kalshi-agent.py', '--config', cfg, ...(dryRun ? ['--dry-run'] : ['--live'])];
   backendProc = spawn('python', args, {
     cwd,
     windowsHide: true,
@@ -163,7 +169,7 @@ function createMenu() {
             const message = [
               'If the app cannot connect:',
               '',
-              '1. Start backend: python kalshi-agent.py --config kalshi-config.json --dry-run',
+              '1. Start backend: python kalshi-agent.py --config kalshi-config.json',
               '2. Confirm dashboard at http://127.0.0.1:9000',
               '3. Re-open this desktop app',
             ].join('\n');
