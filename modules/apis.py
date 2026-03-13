@@ -10,7 +10,7 @@ from modules.config import CFG, BASE_URLS, log
 
 try:
     from py_clob_client.client import ClobClient
-    from py_clob_client.clob_types import OrderArgs, OrderType, BalanceAllowanceParams, AssetType
+    from py_clob_client.clob_types import OrderArgs, OrderType, BalanceAllowanceParams, AssetType, ApiCreds
     from py_clob_client.constants import POLYGON
     HAS_POLYMARKET = True
 except ImportError:
@@ -31,8 +31,11 @@ class KalshiAPI:
     def __init__(self):
         self.key_id = CFG["kalshi_api_key_id"]
         self.base = BASE_URLS.get(CFG["environment"], BASE_URLS["prod"])
+        key_path = CFG["kalshi_private_key_path"]
+        if not os.path.isabs(key_path):
+            key_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", key_path)
         self.pk = serialization.load_pem_private_key(
-            open(CFG["kalshi_private_key_path"], "rb").read(), password=None, backend=default_backend())
+            open(key_path, "rb").read(), password=None, backend=default_backend())
 
     def _sign(self, ts, method, path):
         msg = f"{ts}{method}{path.split('?')[0]}".encode()
@@ -93,6 +96,27 @@ class KalshiAPI:
         return self._req("POST", "/portfolio/orders", o)
 
 
+def _normalize_kalshi(m):
+    """Convert Kalshi API dollar-string fields to cent integers for backward compat."""
+    def _to_cents(key):
+        try:
+            v = float(m.get(key, 0) or 0)
+            return int(round(v * 100))
+        except (ValueError, TypeError):
+            return None
+    m["yes_bid"] = _to_cents("yes_bid_dollars")
+    m["no_bid"] = _to_cents("no_bid_dollars")
+    m["yes_ask"] = _to_cents("yes_ask_dollars")
+    m["no_ask"] = _to_cents("no_ask_dollars")
+    m["last_price"] = _to_cents("last_price_dollars")
+    try:
+        m["volume"] = int(float(m.get("volume_fp", 0) or 0))
+        m["volume_24h"] = int(float(m.get("volume_24h_fp", 0) or 0))
+    except (ValueError, TypeError):
+        pass
+    return m
+
+
 class MarketCache:
     def __init__(self, api):
         self.api = api; self.markets = []; self.last_refresh = 0
@@ -104,7 +128,8 @@ class MarketCache:
         if not self.markets or (now - self.last_refresh) > self.ttl:
             log.info("Loading markets (full refresh)...")
             try:
-                fresh = self.api.all_markets(); self.markets = fresh; self.last_refresh = now
+                fresh = [_normalize_kalshi(m) for m in self.api.all_markets()]
+                self.markets = fresh; self.last_refresh = now
                 self._refresh_failures = 0
                 log.info(f"Cached {len(self.markets)} markets")
             except Exception as e:
@@ -147,7 +172,7 @@ class PolymarketAPI:
             chain_id = POLYGON if HAS_POLYMARKET else 137
 
             if api_key and api_secret and api_passphrase:
-                creds = {"apiKey": api_key, "secret": api_secret, "passphrase": api_passphrase}
+                creds = ApiCreds(api_key=api_key, api_secret=api_secret, api_passphrase=api_passphrase)
                 self.client = ClobClient(CLOB_API, key=self.private_key, chain_id=chain_id,
                                           creds=creds, funder=funder)
             else:
@@ -258,9 +283,9 @@ class PolymarketAPI:
     def positions(self):
         if not self.client: return []
         try:
-            positions = self.client.get_positions()
-            if isinstance(positions, list): return positions
-            return positions.get("positions", []) if isinstance(positions, dict) else []
+            orders = self.client.get_orders()
+            if isinstance(orders, list): return orders
+            return orders.get("orders", []) if isinstance(orders, dict) else []
         except Exception as e:
             log.error(f"Polymarket positions error: {e}"); return []
 
