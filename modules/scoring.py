@@ -49,7 +49,7 @@ def score_market(m):
     elif 48 < hrs <= 72: s += 1
 
     if cat in ("weather", "fed_rates", "inflation", "employment"): s += 3
-    elif cat in ("energy", "policy"): s += 2
+    elif cat in ("energy", "policy", "sports", "crypto"): s += 2
     elif cat in ("gdp_growth", "markets"): s += 1
 
     if vol < 10: s -= 1
@@ -72,7 +72,7 @@ def filter_and_rank(markets):
             _close_samples.append(f"{m.get('ticker', '?')}: hrs={hrs:.1f}")
         m["_hrs_left"] = hrs
         text = " ".join(str(m.get(k, "")) for k in ["title", "ticker", "category", "subtitle", "event_ticker"]).lower()
-        if not any(kw in text for kw in kws): _f_kw += 1; continue
+        if kws and not any(kw in text for kw in kws): _f_kw += 1; continue
         m["_category"] = "other"
         best_cat_score = 0
         for cat_name, cat_kws in cat_rules.items():
