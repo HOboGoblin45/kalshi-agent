@@ -44,7 +44,7 @@ html, body, #root {
   font-family: "JetBrains Mono", "Fira Code", "SF Mono", ui-monospace, monospace;
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.6;
 }
 
@@ -84,7 +84,7 @@ html, body, #root {
   background: var(--term-surface);
   border: 1px solid var(--term-muted);
   border-radius: 2px;
-  padding: 16px;
+  padding: 20px;
   box-shadow: none;
 }
 .card:hover {
@@ -99,7 +99,7 @@ html, body, #root {
 
 /* ── Styled progress bar ────────────────────────────────── */
 .price-bar {
-  height: 6px;
+  height: 8px;
   background: #1a1f1a;
   border-radius: 1px;
   overflow: hidden;

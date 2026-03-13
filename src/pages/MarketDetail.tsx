@@ -56,7 +56,7 @@ export default function MarketDetail() {
     );
   }
 
-  const yesPrice = market.yes_bid ?? market.last_price ?? 50;
+  const yesPrice = market.display_price ?? market.yes_bid ?? market.last_price ?? 50;
   const noPrice = 100 - yesPrice;
   const color = priceColor(yesPrice);
   const spread = (market.yes_ask != null && market.yes_bid != null)
