@@ -68,22 +68,36 @@ class Agent:
 
     @staticmethod
     def _clean_title(m):
-        """Return a readable title. Multi-outcome Kalshi markets often have titles
-        like 'yes Leipzig,yes Crystal Palace,...' which are outcome lists, not
-        real titles. Fall back to event_ticker-based title in that case."""
+        """Return a readable title for multi-outcome parlay markets.
+        Kalshi parlays have titles like 'yes Kevin Durant: 3+,yes Reed Sheppard: 2+,...'
+        which are comma-separated outcome legs. Parse into a concise summary."""
+        import re
         title = m.get("title") or ""
-        # Heuristic: if title starts with 'yes ' or 'no ' and has lots of commas,
-        # it's an outcome list, not a real question
         t_lower = title.lower().strip()
-        if t_lower.startswith(("yes ", "no ")) and title.count(",") >= 2:
-            # Build a nicer title from event_ticker / subtitle
-            et = m.get("event_ticker") or m.get("ticker") or ""
-            sub = m.get("subtitle") or ""
-            if sub:
-                return sub
-            # Convert ticker like KXNVESPORTSMULTIGAMEEXTE to something readable
-            return et.replace("-", " ").replace("_", " ").strip() or title
-        return title
+        # Detect parlay-style titles: start with yes/no and have multiple comma-separated legs
+        if not (t_lower.startswith(("yes ", "no ")) and title.count(",") >= 1):
+            return title  # Normal market title, keep as-is
+        # Parse outcome legs: split on comma, strip yes/no prefix
+        legs = [leg.strip() for leg in title.split(",")]
+        clean_legs = []
+        for leg in legs:
+            # Strip "yes " or "no " prefix
+            cleaned = re.sub(r'^(yes|no)\s+', '', leg, flags=re.IGNORECASE).strip()
+            if cleaned and cleaned not in clean_legs:
+                clean_legs.append(cleaned)
+        if not clean_legs:
+            return title
+        # Summarize: show first 2-3 legs + count
+        MAX_SHOWN = 3
+        if len(clean_legs) <= MAX_SHOWN:
+            summary = " + ".join(clean_legs)
+        else:
+            summary = " + ".join(clean_legs[:MAX_SHOWN]) + f" +{len(clean_legs) - MAX_SHOWN} more"
+        # Add event context if available
+        sub = m.get("subtitle") or ""
+        if sub:
+            return f"{sub}: {summary}"
+        return summary
 
     def _is_ai_scan_due(self):
         mult = CFG.get("ai_scan_interval_multiplier", 5)
@@ -181,7 +195,7 @@ class Agent:
         all_scored.sort(key=lambda x: x.get("_score", 0), reverse=True)
         _CACHE_KEYS = ["ticker", "title", "subtitle", "category", "yes_bid", "no_bid",
                        "last_price", "volume", "volume_24h", "close_time", "status", "event_ticker",
-                       "yes_ask", "no_ask", "open_time", "result", "platform"]
+                       "yes_ask", "no_ask", "open_time", "result", "platform", "display_price"]
         with SHARED_LOCK:
             SHARED["_cached_markets"] = [
                 {**{k: m.get(k) for k in _CACHE_KEYS},

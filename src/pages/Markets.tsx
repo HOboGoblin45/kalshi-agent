@@ -63,8 +63,8 @@ export default function Markets() {
       list = [...list].sort((a, b) => (b.volume ?? 0) - (a.volume ?? 0));
     } else if (sortBy === "yes_price") {
       list = [...list].sort((a, b) => {
-        const pa = a.yes_bid ?? a.last_price ?? 50;
-        const pb = b.yes_bid ?? b.last_price ?? 50;
+        const pa = a.display_price ?? a.yes_bid ?? a.last_price ?? 50;
+        const pb = b.display_price ?? b.yes_bid ?? b.last_price ?? 50;
         return pb - pa;
       });
     } else if (sortBy === "expiry") {
@@ -149,7 +149,7 @@ export default function Markets() {
       {/* Market grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {paged.map((m) => {
-          const yesPrice = m.yes_bid ?? m.last_price ?? 50;
+          const yesPrice = m.display_price ?? m.yes_bid ?? m.last_price ?? 50;
           const noPrice = 100 - yesPrice;
           const color = priceColor(yesPrice);
           const hasLiquidity = (m.volume ?? 0) > 0;

@@ -48,7 +48,8 @@
                "crypto regulation", "bitcoin etf", "stablecoin", "debt ceiling", "government shutdown", "sanctions"],
     "sports": ["nfl", "nba", "mlb", "nhl", "soccer", "football", "basketball", "baseball", "hockey",
                "playoff", "championship", "finals", "march madness", "world series", "stanley cup", "super bowl",
-               "mvp", "player", "team", "game", "match", "points", "score", "wins"],
+               "mvp", "player", "team", "game", "match", "points", "score", "wins", "sports",
+               "over", "under", "parlay", "multigame", "crosscategory"],
     "crypto": ["bitcoin", "ethereum", "solana", "dogecoin", "xrp", "cardano", "crypto", "blockchain",
                "defi", "nft", "token", "coin", "altcoin", "memecoin", "binance", "coinbase", "halving"]
   }

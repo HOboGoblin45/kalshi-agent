@@ -114,6 +114,14 @@ def _normalize_kalshi(m):
         m["volume_24h"] = int(float(m.get("volume_24h_fp", 0) or 0))
     except (ValueError, TypeError):
         pass
+    # Compute best available display price (yes_bid is often 0 on thin markets)
+    m["display_price"] = (
+        m["yes_bid"] if m.get("yes_bid") else
+        m["last_price"] if m.get("last_price") else
+        m["yes_ask"] if m.get("yes_ask") else
+        (100 - m["no_bid"]) if m.get("no_bid") and m["no_bid"] < 100 else
+        None
+    )
     return m
 
 

@@ -28,9 +28,21 @@ def calc_hours_left(m):
     except Exception: return 9999
 
 
+def _best_price(m):
+    """Return the best available YES price in cents, or None if truly unknown."""
+    for k in ("display_price", "yes_bid", "last_price", "yes_ask"):
+        v = m.get(k)
+        if v and v > 0:
+            return v
+    nb = m.get("no_bid")
+    if nb and 0 < nb < 100:
+        return 100 - nb
+    return None
+
+
 def score_market(m):
     s = 0; vol = m.get("volume", 0) or 0
-    yc = m.get("yes_bid", m.get("last_price", 50)) or 50
+    yc = _best_price(m) or 50
     hrs = m.get("_hrs_left", 9999); cat = m.get("_category", "other")
 
     if vol >= 1000: s += 4
@@ -63,7 +75,7 @@ def filter_and_rank(markets):
     short_term = []; long_term = []
     _f_price = 0; _f_vol = 0; _f_hrs = 0; _f_kw = 0; _close_samples = []
     for m in markets:
-        yc = m.get("yes_bid", m.get("last_price", 50)) or 50
+        yc = _best_price(m) or 50
         if yc > CFG["max_price_cents"] or yc < CFG["min_price_cents"]: _f_price += 1; continue
         if (m.get("volume", 0) or 0) < CFG["min_volume"]: _f_vol += 1; continue
         hrs = calc_hours_left(m)

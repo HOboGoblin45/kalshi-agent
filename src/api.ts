@@ -76,6 +76,7 @@ export interface KalshiMarket {
   open_time: string | null;
   result: string | null;
   platform: string;
+  display_price?: number | null;
   _score?: number;
 }
 
