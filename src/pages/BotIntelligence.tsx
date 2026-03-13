@@ -21,13 +21,13 @@ function getBotResponse(text: string, agentState: ReturnType<typeof useStore.get
     return `Last trade: ${last.side.toUpperCase()} ${last.contracts}x ${last.title || last.ticker} @${last.price_cents}c (edge ${last.edge}%, conf ${last.confidence}%). Trades today: ${s.risk.day_trades}.`;
   }
   if (lower.includes("p&l") || lower.includes("profit") || lower.includes("performance")) {
-    return `Today P&L: ${s.risk.day_pnl}. Win rate: ${s.risk.win_rate}. Total trades: ${s.risk.total}. Exposure: ${s.risk.exposure}.`; 
+    return `Today P&L: ${s.risk.day_pnl}. Win rate: ${s.risk.win_rate}. Total trades: ${s.risk.total}. Exposure: ${s.risk.exposure}.`;
   }
   if (lower.includes("balance") || lower.includes("money")) {
     return `Kalshi: $${s.balance.toFixed(2)}. Polymarket: $${(s.poly_balance || 0).toFixed(2)}. Combined: $${balance.toFixed(2)}.`;
   }
   if (lower.includes("scan") || lower.includes("market")) {
-    return `${s.scan_count} scans completed. Arb every ${s.scan_interval}m, AI debate every ${s.ai_interval}m. Arb opportunities: ${s.arb_opps}.`; 
+    return `${s.scan_count} scans completed. Arb every ${s.scan_interval}m, AI debate every ${s.ai_interval}m. Arb opportunities: ${s.arb_opps}.`;
   }
   return `Status: ${s.status}. Balance: $${balance.toFixed(2)}. ${s.risk.day_trades} trades today. Ask about trades, P&L, balance, or scans.`;
 }
@@ -87,23 +87,23 @@ export default function BotIntelligence() {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="shrink-0 p-2 md:p-2.5 space-y-2">
-        <div className="card flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+      <div className="shrink-0 p-4 md:p-5 space-y-3">
+        <div className="card flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <span className={`w-2 h-2 rounded-full ${agentState?.enabled ? "bg-accent-green pulse-green" : "bg-accent-red"}`} />
-            <span className="text-[11px] text-text-secondary">{agentState?.status || "Connecting..."}</span>
+            <span className="text-sm text-text-secondary">{agentState?.status || "Connecting..."}</span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             {agentState && (
-              <div className="flex items-center gap-2 text-[11px]">
-              <Stat label="Win" value={agentState.risk.win_rate} />
-              <Stat label="P&L" value={agentState.risk.day_pnl} />
-              <Stat label="Scans" value={String(agentState.scan_count)} />
+              <div className="flex items-center gap-3 text-sm">
+                <Stat label="Win" value={agentState.risk.win_rate} />
+                <Stat label="P&L" value={agentState.risk.day_pnl} />
+                <Stat label="Scans" value={String(agentState.scan_count)} />
               </div>
             )}
             <button
               onClick={clearChatMessages}
-              className="h-6 px-2 rounded-md border border-border-subtle text-[10px] text-text-secondary hover:text-text-primary"
+              className="h-7 px-2.5 rounded-md border border-border-subtle text-xs text-text-secondary hover:text-text-primary"
               aria-label="Clear chat history"
             >
               Clear
@@ -112,17 +112,17 @@ export default function BotIntelligence() {
         </div>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-2 md:px-2.5 space-y-2 pb-2.5">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 md:px-5 space-y-3 pb-3">
         {chatMessages.map((msg) => (
           <div key={msg.id} className={`flex ${msg.sender === "user" ? "justify-end" : "justify-start"}`}>
             <div className={`flex gap-2 max-w-[86%] ${msg.sender === "user" ? "flex-row-reverse" : ""}`}>
               {msg.sender === "bot" && (
-                <div className="w-5 h-5 rounded-full shrink-0 flex items-center justify-center text-[9px] font-bold" style={{ background: "var(--accent-color)" }}>
+                <div className="w-7 h-7 rounded-full shrink-0 flex items-center justify-center text-xs font-bold" style={{ background: "var(--accent-color)" }}>
                   K
                 </div>
               )}
               <div
-                className={`px-2.5 py-1.5 rounded-lg text-[11px] ${
+                className={`px-3 py-2.5 rounded-xl text-sm ${
                   msg.sender === "user"
                     ? "text-white rounded-br-sm"
                     : "bg-bg-elevated text-text-primary rounded-bl-sm"
@@ -138,10 +138,10 @@ export default function BotIntelligence() {
         <AnimatePresence>
           {typing && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex items-center gap-2">
-              <div className="w-5 h-5 rounded-full shrink-0 flex items-center justify-center text-[9px] font-bold" style={{ background: "var(--accent-color)" }}>
+              <div className="w-7 h-7 rounded-full shrink-0 flex items-center justify-center text-xs font-bold" style={{ background: "var(--accent-color)" }}>
                 K
               </div>
-              <div className="bg-bg-elevated px-2.5 py-1.5 rounded-lg rounded-bl-sm flex gap-1">
+              <div className="bg-bg-elevated px-3 py-2 rounded-xl rounded-bl-sm flex gap-1">
                 {[0, 1, 2].map((i) => (
                   <span
                     key={i}
@@ -155,13 +155,13 @@ export default function BotIntelligence() {
         </AnimatePresence>
       </div>
 
-      <div className="shrink-0 p-2 md:px-2.5 border-t border-border-subtle glass">
-        <div className="flex gap-1 mb-1.5 overflow-x-auto scrollbar-none">
+      <div className="shrink-0 p-4 md:px-5 border-t border-border-subtle glass">
+        <div className="flex gap-1.5 mb-2.5 overflow-x-auto scrollbar-none">
           {suggestedPrompts.map((p) => (
             <button
               key={p}
               onClick={() => sendMessage(p)}
-              className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-bg-surface border border-border-subtle text-text-secondary hover:text-text-primary whitespace-nowrap"
+              className="px-2.5 py-1 rounded-full text-xs font-medium bg-bg-surface border border-border-subtle text-text-secondary hover:text-text-primary whitespace-nowrap"
             >
               {p}
             </button>
@@ -174,14 +174,14 @@ export default function BotIntelligence() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && sendMessage(input)}
-            className="flex-1 h-8 px-2.5 rounded-md bg-bg-surface border border-border-subtle text-xs text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-white/20"
+            className="flex-1 h-10 px-3 rounded-lg bg-bg-surface border border-border-subtle text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-white/20"
           />
           <button
             onClick={() => sendMessage(input)}
-            className="w-8 h-8 rounded-md flex items-center justify-center text-white"
+            className="w-10 h-10 rounded-lg flex items-center justify-center text-white"
             style={{ background: "var(--accent-color)" }}
           >
-            <Send size={12} />
+            <Send size={14} />
           </button>
         </div>
       </div>
