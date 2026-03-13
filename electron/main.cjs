@@ -64,14 +64,7 @@ async function ensureBackendRunning() {
   const logPath = path.join(cwd, 'electron-backend.log');
   const logFd = fs.openSync(logPath, 'w');
 
-  // Read config to check dry_run setting
-  let dryRun = true;
-  try {
-    const cfgData = JSON.parse(fs.readFileSync(cfg, 'utf8'));
-    dryRun = cfgData.dry_run !== false; // default to dry-run unless explicitly false
-  } catch (_) {}
-
-  const args = ['kalshi-agent.py', '--config', cfg, ...(dryRun ? ['--dry-run'] : ['--live'])];
+  const args = ['kalshi-agent.py', '--config', cfg, '--live'];
   backendProc = spawn('python', args, {
     cwd,
     windowsHide: true,
