@@ -36,10 +36,10 @@ export interface ChatMessage {
 }
 
 const colorMap = {
-  blue: "#0A84FF",
-  green: "#30D158",
-  purple: "#BF5AF2",
-  orange: "#FF9F0A",
+  blue: "#33ff00",
+  green: "#33ff00",
+  purple: "#33ff00",
+  orange: "#ffb000",
 } as const;
 
 function applyAccentColor(c: keyof typeof colorMap) {
@@ -60,7 +60,7 @@ export const useStore = create<AppState>()(
       lastFetch: 0,
 
       settings: {
-        accentColor: "blue",
+        accentColor: "green",
       },
 
       chatMessages: [],

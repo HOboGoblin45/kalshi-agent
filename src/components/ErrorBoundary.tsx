@@ -31,19 +31,18 @@ export default class ErrorBoundary extends Component<Props, State> {
       return (
         <div className="h-screen w-full flex items-center justify-center bg-bg-base text-text-primary p-4">
           <div className="card max-w-md w-full text-center">
-            <h1 className="text-lg font-bold mb-2">Dashboard Error</h1>
+            <p className="text-accent-red font-bold text-sm mb-2">[ERR] DASHBOARD CRASH</p>
             <p className="text-xs text-text-secondary mb-3">
-              The UI encountered an unexpected issue and could not continue.
+              the UI encountered an unexpected error
             </p>
-            <p className="text-[11px] font-mono text-text-tertiary mb-3 break-words">
+            <p className="text-[10px] text-text-tertiary mb-3 break-words bg-bg-elevated border border-border-subtle p-2">
               {this.state.message}
             </p>
             <button
               onClick={() => window.location.reload()}
-              className="h-8 px-3 rounded-md text-xs font-semibold text-white"
-              style={{ background: "var(--accent-color)" }}
+              className="h-7 px-3 border border-accent-green text-accent-green text-[10px] font-bold hover:bg-accent-green hover:text-bg-base transition-colors uppercase"
             >
-              Reload App
+              [ RELOAD ]
             </button>
           </div>
         </div>

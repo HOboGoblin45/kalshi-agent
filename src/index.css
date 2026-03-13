@@ -1,22 +1,29 @@
 @import "tailwindcss";
 
 @theme {
-  --color-bg-base: #000000;
-  --color-bg-surface: #1C1C1E;
-  --color-bg-elevated: #2C2C2E;
-  --color-bg-cell: #3A3A3C;
-  --color-accent-green: #30D158;
-  --color-accent-red: #FF453A;
-  --color-accent-blue: #0A84FF;
-  --color-accent-gold: #FFD60A;
-  --color-text-primary: #FFFFFF;
-  --color-text-secondary: rgba(235,235,245,0.6);
-  --color-text-tertiary: rgba(235,235,245,0.3);
-  --color-border-subtle: rgba(255,255,255,0.08);
+  --color-bg-base: #0a0a0a;
+  --color-bg-surface: #111111;
+  --color-bg-elevated: #1a1a1a;
+  --color-bg-cell: #222222;
+  --color-accent-green: #33ff00;
+  --color-accent-red: #ff3333;
+  --color-accent-blue: #33ff00;
+  --color-accent-gold: #ffb000;
+  --color-text-primary: #33ff00;
+  --color-text-secondary: #88cc44;
+  --color-text-tertiary: #1f521f;
+  --color-border-subtle: #1f521f;
 }
 
 :root {
-  --accent-color: #0A84FF;
+  --accent-color: #33ff00;
+  --term-green: #33ff00;
+  --term-amber: #ffb000;
+  --term-red: #ff3333;
+  --term-muted: #1f521f;
+  --term-bg: #0a0a0a;
+  --term-surface: #111111;
+  --term-glow: 0 0 5px rgba(51, 255, 0, 0.5);
 }
 
 * {
@@ -28,31 +35,56 @@
 html, body, #root {
   height: 100%;
   width: 100%;
-  background: #000000;
-  color: #FFFFFF;
-  font-family: "SF Pro Display", system-ui, -apple-system, sans-serif;
+  background: var(--term-bg);
+  color: var(--term-green);
+  font-family: "JetBrains Mono", "Fira Code", "SF Mono", ui-monospace, monospace;
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .font-mono {
-  font-family: "SF Mono", ui-monospace, monospace !important;
+  font-family: "JetBrains Mono", "Fira Code", "SF Mono", ui-monospace, monospace !important;
 }
 
+/* ── CRT Scanline Overlay ─────────────────────────────── */
+.crt-overlay {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.06) 0px,
+    rgba(0, 0, 0, 0.06) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  mix-blend-mode: multiply;
+}
+
+/* ── Terminal Glow ────────────────────────────────────── */
+.term-glow {
+  text-shadow: var(--term-glow);
+}
+
+/* ── Glass (replaced with terminal surface) ───────────── */
 .glass {
-  background: rgba(28,28,30,0.85);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: var(--term-surface);
+  border: 1px solid var(--term-muted);
 }
 
+/* ── Card (Terminal Pane) ─────────────────────────────── */
 .card {
-  background: #1C1C1E;
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 12px;
+  background: var(--term-bg);
+  border: 1px solid var(--term-muted);
+  border-radius: 0;
   padding: 12px;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.28);
+  box-shadow: none;
 }
 
+/* ── Scrollbar ────────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -61,19 +93,77 @@ html, body, #root {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.15);
-  border-radius: 3px;
+  background: var(--term-muted);
+  border-radius: 0;
 }
 
+/* ── Cursor Blink ─────────────────────────────────────── */
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+.animate-cursor {
+  animation: cursor-blink 1s step-end infinite;
+}
+
+/* ── Pulse Green (terminal version) ───────────────────── */
 @keyframes pulse-green {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  50% { opacity: 0.3; }
 }
 .pulse-green {
-  animation: pulse-green 2s ease-in-out infinite;
+  animation: pulse-green 1.5s step-end infinite;
 }
 
+/* ── Typing Bounce ────────────────────────────────────── */
 @keyframes typing-bounce {
   0%, 60%, 100% { transform: translateY(0); }
-  30% { transform: translateY(-4px); }
+  30% { transform: translateY(-3px); }
+}
+
+/* ── Typewriter Effect ────────────────────────────────── */
+@keyframes typewriter {
+  from { width: 0; }
+  to { width: 100%; }
+}
+.typewriter {
+  overflow: hidden;
+  white-space: nowrap;
+  animation: typewriter 0.8s steps(20) forwards;
+}
+
+/* ── Terminal Progress Bar ────────────────────────────── */
+.term-bar {
+  font-family: "JetBrains Mono", monospace;
+  letter-spacing: 0;
+}
+
+/* ── Glitch Hover ─────────────────────────────────────── */
+@keyframes glitch {
+  0% { transform: translate(0); }
+  20% { transform: translate(-1px, 1px); }
+  40% { transform: translate(1px, -1px); }
+  60% { transform: translate(-1px, 0); }
+  80% { transform: translate(1px, 1px); }
+  100% { transform: translate(0); }
+}
+.hover-glitch:hover {
+  animation: glitch 0.3s linear;
+}
+
+/* ── Selection ────────────────────────────────────────── */
+::selection {
+  background: var(--term-green);
+  color: var(--term-bg);
+}
+
+/* ── Focus ────────────────────────────────────────────── */
+input:focus, textarea:focus, button:focus-visible {
+  outline: 1px solid var(--term-green);
+  outline-offset: -1px;
+}
+
+/* ── All text monospace override ──────────────────────── */
+*, *::before, *::after {
+  font-family: inherit;
 }
