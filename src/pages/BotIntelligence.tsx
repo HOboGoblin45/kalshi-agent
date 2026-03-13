@@ -1,35 +1,35 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Send } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
 import { useStore } from "../store/useStore";
 import type { ChatMessage } from "../store/useStore";
 
 function getBotResponse(text: string, agentState: ReturnType<typeof useStore.getState>["agentState"]): string {
   const s = agentState;
-  if (!s) return "Agent is not connected. Start the agent first.";
+  if (!s) return "[ERR] agent not connected. start agent first.";
 
   const lower = text.toLowerCase();
   const balance = s.balance + (s.poly_balance || 0);
 
   if (lower.includes("status") || lower.includes("how") || lower.includes("running")) {
-    return `Agent is ${s.enabled ? "ENABLED" : "DISABLED"}. Status: ${s.status}. Balance: $${balance.toFixed(2)}. Scans: ${s.scan_count}. Win rate: ${s.risk.win_rate}. P&L: ${s.risk.day_pnl}.`;
+    return `[STATUS] agent=${s.enabled ? "ENABLED" : "DISABLED"} | status=${s.status} | balance=$${balance.toFixed(2)} | scans=${s.scan_count} | win_rate=${s.risk.win_rate} | pnl=${s.risk.day_pnl}`;
   }
   if (lower.includes("trade") || lower.includes("should i") || lower.includes("top pick")) {
     const trades = s.trades;
-    if (trades.length === 0) return "No trades have been placed yet. The agent is still scanning for edge.";
+    if (trades.length === 0) return "[INFO] no trades placed yet. agent scanning for edge...";
     const last = trades[trades.length - 1];
-    return `Last trade: ${last.side.toUpperCase()} ${last.contracts}x ${last.title || last.ticker} @${last.price_cents}c (edge ${last.edge}%, conf ${last.confidence}%). Trades today: ${s.risk.day_trades}.`;
+    return `[TRADE] last=${last.side.toUpperCase()} ${last.contracts}x ${last.title || last.ticker} @${last.price_cents}c | edge=${last.edge}% conf=${last.confidence}% | day_trades=${s.risk.day_trades}`;
   }
   if (lower.includes("p&l") || lower.includes("profit") || lower.includes("performance")) {
-    return `Today P&L: ${s.risk.day_pnl}. Win rate: ${s.risk.win_rate}. Total trades: ${s.risk.total}. Exposure: ${s.risk.exposure}.`;
+    return `[PERF] pnl=${s.risk.day_pnl} | win_rate=${s.risk.win_rate} | total=${s.risk.total} | exposure=${s.risk.exposure}`;
   }
   if (lower.includes("balance") || lower.includes("money")) {
-    return `Kalshi: $${s.balance.toFixed(2)}. Polymarket: $${(s.poly_balance || 0).toFixed(2)}. Combined: $${balance.toFixed(2)}.`;
+    return `[BAL] kalshi=$${s.balance.toFixed(2)} | poly=$${(s.poly_balance || 0).toFixed(2)} | total=$${balance.toFixed(2)}`;
   }
   if (lower.includes("scan") || lower.includes("market")) {
-    return `${s.scan_count} scans completed. Arb every ${s.scan_interval}m, AI debate every ${s.ai_interval}m. Arb opportunities: ${s.arb_opps}.`;
+    return `[SCAN] count=${s.scan_count} | arb_interval=${s.scan_interval}m | ai_interval=${s.ai_interval}m | arb_opps=${s.arb_opps}`;
   }
-  return `Status: ${s.status}. Balance: $${balance.toFixed(2)}. ${s.risk.day_trades} trades today. Ask about trades, P&L, balance, or scans.`;
+  return `[SYS] status=${s.status} | balance=$${balance.toFixed(2)} | day_trades=${s.risk.day_trades} -- query: status, trades, p&l, balance, scans`;
 }
 
 export default function BotIntelligence() {
@@ -49,7 +49,7 @@ export default function BotIntelligence() {
       addChatMessage({
         id: "welcome",
         sender: "bot",
-        text: `Agent is ${agentState.enabled ? "running" : "paused"}. Balance: $${balance.toFixed(2)}. Status: ${agentState.status}.`,
+        text: `[INIT] agent=${agentState.enabled ? "running" : "paused"} | balance=$${balance.toFixed(2)} | status=${agentState.status}`,
         timestamp: Date.now(),
       });
     }
@@ -83,117 +83,99 @@ export default function BotIntelligence() {
     [addChatMessage, agentState]
   );
 
-  const suggestedPrompts = ["Status?", "Recent trades", "What is my P&L?"];
+  const suggestedPrompts = ["--status", "--trades", "--pnl"];
 
   return (
     <div className="flex flex-col h-full">
-      <div className="shrink-0 p-4 md:p-5 space-y-3">
-        <div className="card flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      {/* Status Bar */}
+      <div className="shrink-0 p-2 md:p-2.5">
+        <div className="card flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[10px]">
           <div className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${agentState?.enabled ? "bg-accent-green pulse-green" : "bg-accent-red"}`} />
-            <span className="text-sm text-text-secondary">{agentState?.status || "Connecting..."}</span>
+            <span className={`font-bold ${agentState?.enabled ? "text-accent-green pulse-green" : "text-accent-red"}`}>
+              {agentState?.enabled ? "[OK]" : "[OFF]"}
+            </span>
+            <span className="text-text-tertiary">{agentState?.status || "connecting..."}</span>
           </div>
           <div className="flex items-center gap-3">
             {agentState && (
-              <div className="flex items-center gap-3 text-sm">
-                <Stat label="Win" value={agentState.risk.win_rate} />
-                <Stat label="P&L" value={agentState.risk.day_pnl} />
-                <Stat label="Scans" value={String(agentState.scan_count)} />
-              </div>
+              <>
+                <span className="text-text-tertiary">win:<span className="text-accent-green">{agentState.risk.win_rate}</span></span>
+                <span className="text-text-tertiary">pnl:<span className="text-accent-green">{agentState.risk.day_pnl}</span></span>
+                <span className="text-text-tertiary">scans:<span className="text-accent-green">{agentState.scan_count}</span></span>
+              </>
             )}
             <button
               onClick={clearChatMessages}
-              className="h-7 px-2.5 rounded-md border border-border-subtle text-xs text-text-secondary hover:text-text-primary"
+              className="px-1.5 py-0.5 border border-border-subtle text-text-tertiary hover:text-accent-green hover:border-accent-green"
               aria-label="Clear chat history"
             >
-              Clear
+              [ CLEAR ]
             </button>
           </div>
         </div>
       </div>
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 md:px-5 space-y-3 pb-3">
+      {/* Messages */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-2 md:px-2.5 space-y-1 pb-2.5">
         {chatMessages.map((msg) => (
           <div key={msg.id} className={`flex ${msg.sender === "user" ? "justify-end" : "justify-start"}`}>
-            <div className={`flex gap-2 max-w-[86%] ${msg.sender === "user" ? "flex-row-reverse" : ""}`}>
-              {msg.sender === "bot" && (
-                <div className="w-7 h-7 rounded-full shrink-0 flex items-center justify-center text-xs font-bold" style={{ background: "var(--accent-color)" }}>
-                  K
+            <div className={`max-w-[90%] ${msg.sender === "user" ? "text-right" : ""}`}>
+              {msg.sender === "bot" ? (
+                <div className="text-[11px] text-accent-green py-1">
+                  <span className="text-text-tertiary">kalshi&gt; </span>
+                  {msg.text}
+                </div>
+              ) : (
+                <div className="text-[11px] text-accent-gold py-1">
+                  <span className="text-text-tertiary">you$ </span>
+                  {msg.text}
                 </div>
               )}
-              <div
-                className={`px-3 py-2.5 rounded-xl text-sm ${
-                  msg.sender === "user"
-                    ? "text-white rounded-br-sm"
-                    : "bg-bg-elevated text-text-primary rounded-bl-sm"
-                }`}
-                style={msg.sender === "user" ? { background: "var(--accent-color)" } : undefined}
-              >
-                {msg.text}
-              </div>
             </div>
           </div>
         ))}
 
         <AnimatePresence>
           {typing && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-full shrink-0 flex items-center justify-center text-xs font-bold" style={{ background: "var(--accent-color)" }}>
-                K
-              </div>
-              <div className="bg-bg-elevated px-3 py-2 rounded-xl rounded-bl-sm flex gap-1">
-                {[0, 1, 2].map((i) => (
-                  <span
-                    key={i}
-                    className="w-1.5 h-1.5 rounded-full bg-text-secondary"
-                    style={{ animation: "typing-bounce 1.2s infinite", animationDelay: `${i * 0.15}s` }}
-                  />
-                ))}
-              </div>
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="text-[11px] py-1">
+              <span className="text-text-tertiary">kalshi&gt; </span>
+              <span className="text-accent-green animate-cursor">_</span>
             </motion.div>
           )}
         </AnimatePresence>
       </div>
 
-      <div className="shrink-0 p-4 md:px-5 border-t border-border-subtle glass">
-        <div className="flex gap-1.5 mb-2.5 overflow-x-auto scrollbar-none">
+      {/* Input Area */}
+      <div className="shrink-0 p-2 md:px-2.5 border-t border-border-subtle bg-bg-surface">
+        <div className="flex gap-1.5 mb-1.5 overflow-x-auto">
           {suggestedPrompts.map((p) => (
             <button
               key={p}
               onClick={() => sendMessage(p)}
-              className="px-2.5 py-1 rounded-full text-xs font-medium bg-bg-surface border border-border-subtle text-text-secondary hover:text-text-primary whitespace-nowrap"
+              className="px-2 py-0.5 text-[10px] font-medium border border-border-subtle text-text-tertiary hover:text-accent-green hover:border-accent-green whitespace-nowrap"
             >
               {p}
             </button>
           ))}
         </div>
         <div className="flex items-center gap-2">
+          <span className="text-[10px] text-text-tertiary shrink-0">$</span>
           <input
             type="text"
-            placeholder="Ask about trades, P&L, scans..."
+            placeholder="query agent..."
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && sendMessage(input)}
-            className="flex-1 h-10 px-3 rounded-lg bg-bg-surface border border-border-subtle text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-white/20"
+            className="flex-1 h-8 px-2 bg-transparent border border-border-subtle text-xs text-accent-green placeholder:text-text-tertiary focus:outline-none focus:border-accent-green"
           />
           <button
             onClick={() => sendMessage(input)}
-            className="w-10 h-10 rounded-lg flex items-center justify-center text-white"
-            style={{ background: "var(--accent-color)" }}
+            className="h-8 px-3 border border-accent-green text-accent-green text-[10px] font-bold hover:bg-accent-green hover:text-bg-base transition-colors"
           >
-            <Send size={14} />
+            <Send size={12} />
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <span className="text-text-secondary">{label} </span>
-      <span className="font-mono font-semibold">{value}</span>
     </div>
   );
 }

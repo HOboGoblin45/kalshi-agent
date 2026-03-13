@@ -3,7 +3,6 @@ import { Search } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useStore } from "../store/useStore";
-import ProbabilityGauge from "../components/ProbabilityGauge";
 
 function formatVol(v: number | null) {
   if (!v) return "$0";
@@ -25,6 +24,11 @@ function formatCloseDate(dt: string | null) {
   }
 }
 
+function termBar(pct: number, width = 20): string {
+  const filled = Math.round((pct / 100) * width);
+  return "[" + "|".repeat(filled) + ".".repeat(width - filled) + "]";
+}
+
 export default function Markets() {
   const navigate = useNavigate();
   const markets = useStore((s) => s.markets);
@@ -42,109 +46,85 @@ export default function Markets() {
   });
 
   return (
-    <div className="p-3 md:p-4 max-w-6xl mx-auto">
+    <div className="p-3 md:p-4 max-w-7xl mx-auto">
       <div className="flex items-center gap-2 mb-3">
-        <h1 className="text-2xl font-bold">Markets</h1>
+        <h1 className="text-sm font-bold uppercase tracking-wider term-glow">+--- MARKETS ---+</h1>
         {agentState && (
-          <div className="flex items-center gap-1.5">
-            <span
-              className={`w-2 h-2 rounded-full ${
-                agentState.enabled ? "bg-accent-green pulse-green" : "bg-accent-red"
-              }`}
-            />
-            <span
-              className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${
-                agentState.enabled
-                  ? "text-accent-green bg-accent-green/15"
-                  : "text-accent-red bg-accent-red/15"
-              }`}
-            >
-              {agentState.enabled ? "LIVE" : "OFF"}
-            </span>
-          </div>
+          <span className={`text-[10px] font-bold ${agentState.enabled ? "text-accent-green" : "text-accent-red"}`}>
+            {agentState.enabled ? "[LIVE]" : "[OFF]"}
+          </span>
         )}
-        <span className="text-xs text-text-secondary ml-auto font-mono">
-          {filtered.length} markets
+        <span className="text-[10px] text-text-tertiary ml-auto">
+          {filtered.length} results
         </span>
       </div>
 
       <div className="relative mb-3">
         <Search
-          size={16}
-          className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary"
+          size={14}
+          className="absolute left-2 top-1/2 -translate-y-1/2 text-text-tertiary"
         />
         <input
           type="text"
-          placeholder="Search markets..."
+          placeholder="grep markets..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          className="w-full h-9 pl-10 pr-4 rounded-xl bg-bg-surface border border-border-subtle text-sm text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-white/20"
+          className="w-full h-9 pl-8 pr-3 bg-bg-surface border border-border-subtle text-xs text-accent-green placeholder:text-text-tertiary focus:outline-none focus:border-accent-green"
         />
       </div>
 
       {filtered.length === 0 && !search && (
-        <div className="text-center py-10 text-text-secondary">
-          <p className="text-base font-medium">No markets loaded yet</p>
-          <p className="text-xs mt-1">The agent will load markets on its next scan</p>
+        <div className="text-center py-10 text-text-secondary card">
+          <p className="text-xs">[INFO] no markets loaded yet</p>
+          <p className="text-[10px] text-text-tertiary mt-1">agent will load markets on next scan...</p>
         </div>
       )}
 
       {filtered.length === 0 && search && (
-        <div className="text-center py-10 text-text-secondary">
-          <p className="text-base font-medium">No markets found</p>
-          <p className="text-xs mt-1">Try a different search</p>
+        <div className="text-center py-10 text-text-secondary card">
+          <p className="text-xs">[WARN] no matches for &quot;{search}&quot;</p>
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
         {filtered.map((m) => {
           const yesPrice = m.yes_bid ?? m.last_price ?? 50;
           return (
             <motion.div
               key={m.ticker}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="card cursor-pointer transition-colors hover:border-white/20"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="card cursor-pointer transition-colors hover:border-accent-green group"
               onClick={() => navigate(`/market/${encodeURIComponent(m.ticker)}`)}
             >
-              <div className="flex items-start justify-between mb-2.5">
-                <span className="text-[10px] font-mono text-text-tertiary bg-bg-elevated px-1.5 py-0.5 rounded">
-                  {m.ticker?.slice(0, 20)}
+              <div className="flex items-start justify-between mb-1.5">
+                <span className="text-[10px] text-text-tertiary">
+                  {m.ticker?.slice(0, 24)}
                 </span>
-                <ProbabilityGauge value={yesPrice} />
+                <span className="text-xs font-bold term-glow text-accent-green">{yesPrice}%</span>
               </div>
 
-              <h3 className="font-semibold text-base text-text-primary mb-2 line-clamp-2 leading-tight">
+              <h3 className="text-xs text-accent-green font-medium mb-1.5 line-clamp-2 leading-snug">
                 {m.title}
               </h3>
 
-              <div className="flex items-center gap-2 text-xs text-text-secondary mb-2.5">
-                <span className="font-mono">{formatVol(m.volume)}</span>
+              <div className="flex items-center gap-2 text-[10px] text-text-tertiary mb-2">
+                <span>vol:{formatVol(m.volume)}</span>
                 <span>|</span>
-                <span>{formatCloseDate(m.close_time)}</span>
+                <span>exp:{formatCloseDate(m.close_time)}</span>
               </div>
 
-              <div className="w-full h-1.5 rounded-full overflow-hidden bg-bg-elevated flex mb-2.5">
-                <motion.div
-                  className="h-full bg-accent-green rounded-l-full"
-                  initial={{ width: 0 }}
-                  animate={{ width: `${yesPrice}%` }}
-                  transition={{ duration: 0.5, ease: "easeOut" }}
-                />
-                <motion.div
-                  className="h-full bg-accent-red rounded-r-full"
-                  initial={{ width: 0 }}
-                  animate={{ width: `${100 - yesPrice}%` }}
-                  transition={{ duration: 0.5, ease: "easeOut" }}
-                />
+              <div className="text-[10px] mb-1.5 tracking-tight">
+                <span className="text-accent-green">{termBar(yesPrice)}</span>
+                <span className="text-text-tertiary ml-1">{yesPrice}%</span>
               </div>
 
-              <div className="flex items-center justify-between text-sm">
+              <div className="flex items-center justify-between text-[10px]">
                 <span className="text-text-secondary">
-                  YES <span className="font-mono text-accent-green">{yesPrice}c</span>
+                  YES <span className="text-accent-green font-bold">{yesPrice}c</span>
                 </span>
                 <span className="text-text-secondary">
-                  NO <span className="font-mono text-accent-red">{100 - yesPrice}c</span>
+                  NO <span className="text-accent-red font-bold">{100 - yesPrice}c</span>
                 </span>
               </div>
             </motion.div>

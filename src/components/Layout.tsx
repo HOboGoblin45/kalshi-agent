@@ -12,58 +12,56 @@ import {
 import { useStore } from "../store/useStore";
 
 const navItems = [
-  { to: "/", icon: TrendingUp, label: "Markets" },
-  { to: "/bot", icon: Brain, label: "Bot Intelligence" },
-  { to: "/positions", icon: Zap, label: "Live Positions" },
-  { to: "/alerts", icon: Bell, label: "Alerts" },
-  { to: "/profile", icon: User, label: "Profile" },
+  { to: "/", icon: TrendingUp, label: "Markets", cmd: "mkt" },
+  { to: "/bot", icon: Brain, label: "Bot Intel", cmd: "bot" },
+  { to: "/positions", icon: Zap, label: "Positions", cmd: "pos" },
+  { to: "/alerts", icon: Bell, label: "Logs", cmd: "log" },
+  { to: "/profile", icon: User, label: "Config", cmd: "cfg" },
 ];
 
 function Sidebar() {
   return (
-    <aside className="hidden md:flex flex-col w-[200px] h-full bg-bg-surface border-r border-border-subtle shrink-0">
-      <div className="px-4 py-4 flex items-center gap-2">
-        <div className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm" style={{ background: "var(--accent-color)" }}>
-          K
-        </div>
-        <span className="font-bold text-lg">Kalshi-Bot</span>
+    <aside className="hidden md:flex flex-col w-[220px] h-full bg-bg-surface border-r border-border-subtle shrink-0">
+      <div className="px-3 py-3 border-b border-border-subtle">
+        <pre className="text-accent-green text-[10px] leading-tight term-glow select-none">
+{`  _  __   _   _    ___ _  _ ___
+ | |/ /  /_\\ | |  / __| || |_ _|
+ | ' <  / _ \\| |__\\__ \\ __ || |
+ |_|\\_\\/_/ \\_\\____|___/_||_|___|`}
+        </pre>
+        <div className="text-[10px] text-text-tertiary mt-1">v6.0 // terminal agent</div>
       </div>
 
-      <nav className="flex-1 px-2.5 mt-1 space-y-1">
+      <nav className="flex-1 px-2 mt-2 space-y-0.5">
         {navItems.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
             end={item.to === "/"}
             className={({ isActive }) =>
-              `flex items-center gap-2 px-2.5 py-2 rounded-lg text-sm font-medium transition-colors ${
+              `flex items-center gap-2 px-2 py-1.5 text-xs transition-colors hover-glitch ${
                 isActive
-                  ? "bg-white/10 text-text-primary"
-                  : "text-text-secondary hover:text-text-primary hover:bg-white/5"
+                  ? "bg-accent-green text-bg-base font-bold"
+                  : "text-text-secondary hover:text-accent-green hover:bg-bg-elevated"
               }`
             }
           >
-            <item.icon size={18} />
-            <span>{item.label}</span>
+            <span className="text-[10px] w-4 opacity-60">&gt;</span>
+            <item.icon size={14} strokeWidth={2} />
+            <span className="uppercase tracking-wider">{item.label}</span>
           </NavLink>
         ))}
       </nav>
 
-      <div className="px-3 py-2.5 border-t border-border-subtle">
+      <div className="px-3 py-2 border-t border-border-subtle">
         <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-full bg-accent-blue flex items-center justify-center text-[10px] font-bold">
-            KA
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-xs font-medium text-text-primary truncate">
-              Kalshi Agent
-            </p>
-            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-accent-gold/15 text-accent-gold">
-              LIVE
-            </span>
-          </div>
-          <NavLink to="/profile" className="text-text-tertiary hover:text-text-primary">
-            <Settings size={14} />
+          <span className="text-[10px] text-text-tertiary">user@kalshi:~$</span>
+          <span className="text-accent-green animate-cursor">_</span>
+        </div>
+        <div className="flex items-center justify-between mt-1">
+          <span className="text-[10px] text-accent-gold">[LIVE]</span>
+          <NavLink to="/profile" className="text-text-tertiary hover:text-accent-green">
+            <Settings size={12} />
           </NavLink>
         </div>
       </div>
@@ -73,20 +71,20 @@ function Sidebar() {
 
 function MobileTabBar() {
   return (
-    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 glass border-t border-border-subtle flex items-center justify-around h-16 px-2">
+    <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-bg-surface border-t border-border-subtle flex items-center justify-around h-14 px-1">
       {navItems.map((item) => (
         <NavLink
           key={item.to}
           to={item.to}
           end={item.to === "/"}
           className={({ isActive }) =>
-            `flex flex-col items-center gap-0.5 text-[10px] font-medium py-1 px-2 relative ${
-              isActive ? "text-accent-blue" : "text-text-secondary"
+            `flex flex-col items-center gap-0.5 text-[9px] font-medium py-1 px-2 uppercase tracking-wider ${
+              isActive ? "text-accent-green term-glow" : "text-text-tertiary"
             }`
           }
         >
-          <item.icon size={20} />
-          <span>{item.label.split(" ")[0]}</span>
+          <item.icon size={16} strokeWidth={2} />
+          <span>{item.cmd}</span>
         </NavLink>
       ))}
     </nav>
@@ -99,27 +97,30 @@ function TopBar() {
   const isDryRun = Boolean(agentState?.dry_run);
 
   return (
-    <header className="h-12 shrink-0 flex items-center justify-between px-3 md:px-4 border-b border-border-subtle bg-bg-surface/80 backdrop-blur-xl sticky top-0 z-30">
+    <header className="h-10 shrink-0 flex items-center justify-between px-3 md:px-4 border-b border-border-subtle bg-bg-surface sticky top-0 z-30">
       <div className="flex items-center gap-2 md:hidden">
-        <div className="w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs" style={{ background: "var(--accent-color)" }}>
-          K
-        </div>
-        <span className="font-bold">Kalshi-Bot</span>
+        <span className="text-accent-green font-bold text-xs term-glow">KALSHI</span>
       </div>
-      <div className="hidden md:block" />
-      <div className="flex items-center gap-3">
+      <div className="hidden md:flex items-center gap-2 text-[10px] text-text-tertiary">
+        <span>sys://dashboard</span>
+        <span className="text-border-subtle">|</span>
+        <span>uptime:active</span>
+      </div>
+      <div className="flex items-center gap-3 text-xs">
         {isDryRun && (
-          <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-accent-blue/15 text-accent-blue">
+          <span className="text-[10px] font-bold px-1.5 py-0.5 border border-accent-gold text-accent-gold">
             DRY-RUN
           </span>
         )}
         {agentState && (
-          <div className="flex items-center gap-2">
-            <span className={`w-2 h-2 rounded-full ${agentState.enabled ? "bg-accent-green pulse-green" : "bg-accent-red"}`} />
-            <span className="text-[11px] text-text-secondary">{agentState.status}</span>
+          <div className="flex items-center gap-1.5">
+            <span className={`text-[10px] font-bold ${agentState.enabled ? "text-accent-green pulse-green" : "text-accent-red"}`}>
+              {agentState.enabled ? "[OK]" : "[OFF]"}
+            </span>
+            <span className="text-[10px] text-text-tertiary">{agentState.status}</span>
           </div>
         )}
-        <span className="font-mono text-xs font-semibold text-text-primary">
+        <span className="text-accent-green font-bold term-glow">
           ${balance.toFixed(2)}
         </span>
       </div>
@@ -131,8 +132,9 @@ function LoadingScreen() {
   return (
     <div className="flex items-center justify-center h-screen bg-bg-base">
       <div className="text-center">
-        <Loader2 size={32} className="mx-auto text-accent-blue animate-spin mb-4" />
-        <p className="text-text-secondary text-sm">Connecting to agent...</p>
+        <Loader2 size={24} className="mx-auto text-accent-green animate-spin mb-3" />
+        <p className="text-text-secondary text-xs">connecting to agent...</p>
+        <span className="text-accent-green animate-cursor">_</span>
       </div>
     </div>
   );
@@ -141,13 +143,13 @@ function LoadingScreen() {
 function ErrorScreen({ error }: { error: string }) {
   return (
     <div className="flex items-center justify-center h-screen bg-bg-base">
-      <div className="text-center max-w-sm">
-        <AlertCircle size={32} className="mx-auto text-accent-red mb-4" />
-        <p className="text-text-primary font-semibold mb-2">Agent Not Running</p>
-        <p className="text-text-secondary text-sm mb-4">{error}</p>
-        <p className="text-text-tertiary text-xs">
-          Start the agent with: <code className="bg-bg-elevated px-2 py-1 rounded">python kalshi-agent.py --config kalshi-config.json</code>
-        </p>
+      <div className="text-center max-w-md card">
+        <AlertCircle size={24} className="mx-auto text-accent-red mb-3" />
+        <p className="text-accent-red font-bold text-sm mb-2">[ERR] AGENT NOT RUNNING</p>
+        <p className="text-text-secondary text-xs mb-3">{error}</p>
+        <div className="text-[11px] text-text-tertiary bg-bg-elevated border border-border-subtle p-2">
+          <span className="text-accent-gold">$</span> python kalshi-agent.py --config kalshi-config.json
+        </div>
       </div>
     </div>
   );
@@ -166,11 +168,12 @@ export default function Layout() {
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <TopBar />
-        <main className="flex-1 overflow-y-auto pb-20 md:pb-4">
+        <main className="flex-1 overflow-y-auto pb-16 md:pb-2">
           <Outlet />
         </main>
       </div>
       <MobileTabBar />
+      <div className="crt-overlay" />
     </div>
   );
 }
