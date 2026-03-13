@@ -52,7 +52,6 @@ class KalshiAPI:
         for attempt in range(retries):
             try:
                 h = self._auth(method, sign_path)
-                log.info(f"Kalshi req: {method} {url} | sign_path={sign_path} | key={self.key_id[:12]}...")
                 if method == "GET": r = req_lib.get(url, headers=h, timeout=30)
                 elif method == "POST": r = req_lib.post(url, headers=h, json=jdata, timeout=30)
                 elif method == "DELETE": r = req_lib.delete(url, headers=h, timeout=30)
