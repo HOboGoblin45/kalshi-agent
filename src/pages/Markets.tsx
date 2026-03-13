@@ -36,7 +36,7 @@ function priceTextClass(pct: number): string {
   return "text-accent-gold";
 }
 
-type SortKey = "volume" | "yes_price" | "expiry" | "default";
+type SortKey = "volume" | "yes_price" | "expiry" | "score" | "default";
 
 const PAGE_SIZE = 30;
 
@@ -73,6 +73,8 @@ export default function Markets() {
         const db = b.close_time ? new Date(b.close_time).getTime() : Infinity;
         return da - db;
       });
+    } else if (sortBy === "score") {
+      list = [...list].sort((a, b) => (b._score ?? 0) - (a._score ?? 0));
     }
 
     return list;
@@ -121,6 +123,7 @@ export default function Markets() {
             className="h-9 pl-2 pr-7 bg-bg-surface border border-border-subtle text-xs text-accent-green appearance-none cursor-pointer focus:outline-none focus:border-accent-green"
           >
             <option value="default">sort:default</option>
+            <option value="score">sort:score</option>
             <option value="volume">sort:volume</option>
             <option value="yes_price">sort:yes%</option>
             <option value="expiry">sort:expiry</option>
@@ -161,17 +164,24 @@ export default function Markets() {
               className={`card ${cardBorder} cursor-pointer group`}
               onClick={() => navigate(`/market/${encodeURIComponent(m.ticker)}`)}
             >
-              {/* Category tag + ticker */}
+              {/* Category tag + score + ticker */}
               <div className="flex items-center justify-between mb-2">
-                {m.category ? (
-                  <span className="text-[10px] uppercase tracking-wider text-text-tertiary bg-bg-elevated px-1.5 py-0.5">
-                    {m.category}
-                  </span>
-                ) : (
-                  <span className="text-[10px] text-text-tertiary truncate max-w-[180px]">
-                    {m.ticker}
-                  </span>
-                )}
+                <div className="flex items-center gap-1.5">
+                  {m.category ? (
+                    <span className="text-[10px] uppercase tracking-wider text-text-tertiary bg-bg-elevated px-1.5 py-0.5">
+                      {m.category}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-text-tertiary truncate max-w-[120px]">
+                      {m.ticker}
+                    </span>
+                  )}
+                  {(m._score ?? 0) > 0 && (
+                    <span className={`text-[10px] px-1.5 py-0.5 ${(m._score ?? 0) >= 10 ? "text-accent-green bg-accent-green/10" : (m._score ?? 0) >= 6 ? "text-accent-gold bg-accent-gold/10" : "text-text-tertiary bg-bg-elevated"}`}>
+                      s:{m._score}
+                    </span>
+                  )}
+                </div>
                 {!hasLiquidity && (
                   <span className="text-[10px] text-text-tertiary bg-bg-elevated px-1.5 py-0.5">NO LIQ</span>
                 )}
