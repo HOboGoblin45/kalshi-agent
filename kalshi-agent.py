@@ -55,6 +55,7 @@ class Agent:
         self.win_streak = 0; self.loss_cooldown = 0
         self._scan_number = 0
         self._last_orderbook_cache = {}
+        self._quickflip_targets = {}  # ticker -> {target_price, side, contracts, entry_time}
         if self.poly_enabled:
             try:
                 self.poly_api = PolymarketAPI()
@@ -98,6 +99,88 @@ class Agent:
         if sub:
             return f"{sub}: {summary}"
         return summary
+
+    def _check_quickflip_exits(self):
+        """Check open quickflip positions and sell at target or stop out."""
+        if not self._quickflip_targets:
+            return
+        expired = []
+        qf_timeout_hrs = CFG.get("quickflip_timeout_hours", 4)
+        for tk, qf in list(self._quickflip_targets.items()):
+            try:
+                age_hrs = (datetime.datetime.now() - qf["entry_time"]).total_seconds() / 3600
+                # Timeout: sell at market after N hours
+                if age_hrs >= qf_timeout_hrs:
+                    log.info(f"  QF TIMEOUT: {tk} held {age_hrs:.1f}h, selling at market")
+                    if qf["platform"] == "kalshi":
+                        ob = self.api.orderbook(tk)
+                        book = ob.get("orderbook", {})
+                        side_book = book.get(qf["side"], book.get(f"{qf['side']}_dollars", []))
+                        if side_book:
+                            current = parse_orderbook_price(side_book[0][0] if isinstance(side_book[0], list) else side_book[0])
+                            if current and not CFG.get("dry_run", True):
+                                sell_price = max(1, int(current) - 2)
+                                sell_side = "no" if qf["side"] == "yes" else "yes"
+                                self.api.place_order(tk, sell_side, qf["contracts"], sell_price)
+                                log.info(f"  QF TIMEOUT SOLD: {tk} @{sell_price}c (entry was {qf['entry_price']}c)")
+                            elif current:
+                                log.info(f"  QF TIMEOUT DRY-RUN: would sell {tk} @{int(current)-2}c")
+                    expired.append(tk)
+                    continue
+                # Check if target price reached
+                if qf["platform"] == "kalshi":
+                    ob = self.api.orderbook(tk)
+                    book = ob.get("orderbook", {})
+                    side_book = book.get(qf["side"], book.get(f"{qf['side']}_dollars", []))
+                    if not side_book:
+                        continue
+                    current = parse_orderbook_price(side_book[0][0] if isinstance(side_book[0], list) else side_book[0])
+                    if current is None:
+                        continue
+                    if current >= qf["target_price"]:
+                        sell_price = max(1, int(qf["target_price"]))
+                        if not CFG.get("dry_run", True):
+                            sell_side = "no" if qf["side"] == "yes" else "yes"
+                            self.api.place_order(tk, sell_side, qf["contracts"], sell_price)
+                            log.info(f"  QF TARGET HIT: {tk} @{sell_price}c (entry {qf['entry_price']}c, +{sell_price - qf['entry_price']}c profit)")
+                        else:
+                            log.info(f"  QF TARGET HIT DRY-RUN: {tk} @{sell_price}c (entry {qf['entry_price']}c)")
+                        # Record profit
+                        pnl = qf["contracts"] * (sell_price - qf["entry_price"]) / 100
+                        self.risk.day_pnl += pnl
+                        for t in reversed(self.risk.trades):
+                            if t.get("ticker") == tk and t.get("status") == "open" and "Quick-flip" in t.get("evidence", ""):
+                                t["status"] = "win"; t["exit_price"] = sell_price
+                                t["pnl"] = round(pnl, 2); t["exit_reason"] = "QF target hit"
+                                t["exit_time"] = datetime.datetime.now().isoformat()
+                                break
+                        self.risk._save()
+                        expired.append(tk)
+                    # Stop-loss: if price dropped 50% from entry, cut losses
+                    elif current <= qf["entry_price"] * 0.5:
+                        sell_price = max(1, int(current) - 1)
+                        if not CFG.get("dry_run", True):
+                            sell_side = "no" if qf["side"] == "yes" else "yes"
+                            self.api.place_order(tk, sell_side, qf["contracts"], sell_price)
+                            log.info(f"  QF STOP-LOSS: {tk} @{sell_price}c (entry {qf['entry_price']}c)")
+                        else:
+                            log.info(f"  QF STOP-LOSS DRY-RUN: {tk} @{sell_price}c (entry {qf['entry_price']}c)")
+                        pnl = qf["contracts"] * (sell_price - qf["entry_price"]) / 100
+                        self.risk.day_pnl += pnl
+                        for t in reversed(self.risk.trades):
+                            if t.get("ticker") == tk and t.get("status") == "open" and "Quick-flip" in t.get("evidence", ""):
+                                t["status"] = "loss"; t["exit_price"] = sell_price
+                                t["pnl"] = round(pnl, 2); t["exit_reason"] = "QF stop-loss"
+                                t["exit_time"] = datetime.datetime.now().isoformat()
+                                break
+                        self.risk._save()
+                        expired.append(tk)
+            except Exception as e:
+                log.debug(f"  QF exit check failed for {tk}: {e}")
+        for tk in expired:
+            del self._quickflip_targets[tk]
+        if expired:
+            log.info(f"Quick-flip exits: {len(expired)} positions closed, {len(self._quickflip_targets)} still open")
 
     def _is_ai_scan_due(self):
         mult = CFG.get("ai_scan_interval_multiplier", 5)
@@ -325,6 +408,9 @@ class Agent:
         # ══════════════════════════════════════
         # PHASE 3: QUICK-FLIP SCAN
         # ══════════════════════════════════════
+        self._update_progress(3, "Quick-Flip Scan", "Checking open QF positions...", total_phases)
+        # First, check existing quickflip positions for target/stop/timeout exits
+        self._check_quickflip_exits()
         self._update_progress(3, "Quick-Flip Scan", "Finding scalp targets...", total_phases)
         if CFG.get("quickflip_enabled", True):
             log.info("Phase 3: Quick-flip scan...")
@@ -355,6 +441,11 @@ class Agent:
                                     self.risk.record(tk, m.get("title", ""), qf["side"], qf_contracts,
                                         qf["entry_price"], 50, int(qf["potential_roi"]),
                                         f"Quick-flip: target {qf['target_price']}c", 0, 0, platform="kalshi")
+                                    self._quickflip_targets[tk] = {
+                                        "target_price": qf["target_price"], "side": qf["side"],
+                                        "contracts": qf_contracts, "entry_price": qf["entry_price"],
+                                        "entry_time": datetime.datetime.now(), "platform": "kalshi",
+                                    }
                                 elif platform == "polymarket" and self.poly_api and self.poly_api.is_trading_enabled:
                                     token = m.get("token_id", "")
                                     if token:
@@ -366,6 +457,12 @@ class Agent:
                                         self.risk.record(tk, m.get("title", ""), qf["side"], qf_contracts,
                                             qf["entry_price"], 50, int(qf["potential_roi"]),
                                             f"Quick-flip: target {qf['target_price']}c", 0, 0, platform="polymarket")
+                                        self._quickflip_targets[tk or token] = {
+                                            "target_price": qf["target_price"], "side": qf["side"],
+                                            "contracts": qf_contracts, "entry_price": qf["entry_price"],
+                                            "entry_time": datetime.datetime.now(), "platform": "polymarket",
+                                            "token_id": token,
+                                        }
                             except Exception as ex:
                                 log.debug(f"  QF execution failed: {ex}")
                 else:
