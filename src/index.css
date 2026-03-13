@@ -2,28 +2,32 @@
 
 @theme {
   --color-bg-base: #0a0a0a;
-  --color-bg-surface: #111111;
-  --color-bg-elevated: #1a1a1a;
-  --color-bg-cell: #222222;
+  --color-bg-surface: #131713;
+  --color-bg-elevated: #1a1f1a;
+  --color-bg-cell: #222822;
   --color-accent-green: #33ff00;
-  --color-accent-red: #ff3333;
+  --color-accent-green-dim: #1a8800;
+  --color-accent-red: #ff4444;
+  --color-accent-red-dim: #661a1a;
   --color-accent-blue: #33ff00;
   --color-accent-gold: #ffb000;
+  --color-accent-gold-dim: #665200;
   --color-text-primary: #33ff00;
   --color-text-secondary: #88cc44;
-  --color-text-tertiary: #1f521f;
-  --color-border-subtle: #1f521f;
+  --color-text-tertiary: #2d6b2d;
+  --color-border-subtle: #2a4f2a;
+  --color-border-active: #33ff00;
 }
 
 :root {
   --accent-color: #33ff00;
   --term-green: #33ff00;
   --term-amber: #ffb000;
-  --term-red: #ff3333;
-  --term-muted: #1f521f;
+  --term-red: #ff4444;
+  --term-muted: #2a4f2a;
   --term-bg: #0a0a0a;
-  --term-surface: #111111;
-  --term-glow: 0 0 5px rgba(51, 255, 0, 0.5);
+  --term-surface: #131713;
+  --term-glow: 0 0 5px rgba(51, 255, 0, 0.4);
 }
 
 * {
@@ -40,8 +44,8 @@ html, body, #root {
   font-family: "JetBrains Mono", "Fira Code", "SF Mono", ui-monospace, monospace;
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 1.6;
 }
 
 .font-mono {
@@ -56,10 +60,10 @@ html, body, #root {
   z-index: 9999;
   background: repeating-linear-gradient(
     0deg,
-    rgba(0, 0, 0, 0.06) 0px,
-    rgba(0, 0, 0, 0.06) 1px,
+    rgba(0, 0, 0, 0.03) 0px,
+    rgba(0, 0, 0, 0.03) 1px,
     transparent 1px,
-    transparent 3px
+    transparent 4px
   );
   mix-blend-mode: multiply;
 }
@@ -77,12 +81,37 @@ html, body, #root {
 
 /* ── Card (Terminal Pane) ─────────────────────────────── */
 .card {
-  background: var(--term-bg);
+  background: var(--term-surface);
   border: 1px solid var(--term-muted);
-  border-radius: 0;
-  padding: 12px;
+  border-radius: 2px;
+  padding: 16px;
   box-shadow: none;
 }
+.card:hover {
+  border-color: var(--term-green);
+}
+
+/* ── Price-tinted card borders ──────────────────────────── */
+.card-green { border-left: 3px solid #33ff00; }
+.card-amber { border-left: 3px solid #ffb000; }
+.card-red   { border-left: 3px solid #ff4444; }
+.card-muted { border-left: 3px solid #2a4f2a; opacity: 0.6; }
+
+/* ── Styled progress bar ────────────────────────────────── */
+.price-bar {
+  height: 6px;
+  background: #1a1f1a;
+  border-radius: 1px;
+  overflow: hidden;
+}
+.price-bar-fill {
+  height: 100%;
+  border-radius: 1px;
+  transition: width 0.3s ease;
+}
+.price-bar-fill.green { background: #33ff00; }
+.price-bar-fill.amber { background: #ffb000; }
+.price-bar-fill.red   { background: #ff4444; }
 
 /* ── Scrollbar ────────────────────────────────────────── */
 ::-webkit-scrollbar {
@@ -138,17 +167,9 @@ html, body, #root {
   letter-spacing: 0;
 }
 
-/* ── Glitch Hover ─────────────────────────────────────── */
-@keyframes glitch {
-  0% { transform: translate(0); }
-  20% { transform: translate(-1px, 1px); }
-  40% { transform: translate(1px, -1px); }
-  60% { transform: translate(-1px, 0); }
-  80% { transform: translate(1px, 1px); }
-  100% { transform: translate(0); }
-}
+/* ── Glitch Hover (subtle) ────────────────────────────── */
 .hover-glitch:hover {
-  animation: glitch 0.3s linear;
+  filter: brightness(1.1);
 }
 
 /* ── Selection ────────────────────────────────────────── */
