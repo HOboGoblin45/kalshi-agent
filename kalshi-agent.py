@@ -36,6 +36,7 @@ from modules.execution import build_execution_plan, should_quickflip, MakerOrder
 from modules.market_state import MARKET_STATE
 from modules.arbitrage import (
     match_markets, scan_cross_platform_arbitrage, execute_cross_arb,
+    exit_cross_arb, should_rotate_arb, ARB_TRACKER,
     scan_arbitrage, _best_ask, _estimate_slippage, route_order, get_best_price,
     find_quickflip_candidates, get_bankroll_tier, get_dynamic_kelly, BANKROLL_TIERS,
 )
@@ -403,6 +404,61 @@ class Agent:
                                 log.error(f"  Cross-arb execution failed: {ex}")
                 else:
                     log.info("  No cross-platform arbitrage found")
+
+                # ── ROTATION CHECK ──
+                # If we have open arb positions, check if any new opportunity
+                # is profitable enough to justify exiting and rotating
+                open_arb_positions = ARB_TRACKER.get_open_positions()
+                if open_arb_positions and cross_arbs:
+                    use_parallel = CFG.get("arb_parallel_execution", False)
+                    min_improve = CFG.get("arb_rotation_min_improvement_cents", 3.0)
+                    rotations = should_rotate_arb(
+                        open_arb_positions, cross_arbs,
+                        kalshi_fee=CFG["taker_fee_per_contract"],
+                        poly_fee=CFG.get("polymarket_fee_per_contract", 0.02),
+                        min_improvement_cents=min_improve)
+
+                    for rot in rotations[:1]:  # Only rotate into the single best opportunity
+                        exit_pos = rot["exit_position"]
+                        enter_opp = rot["enter_opportunity"]
+                        log.info(f"  ROTATION: Exit {exit_pos['kalshi_ticker']} "
+                                 f"(profit {rot['current_profit']:.1f}c) -> "
+                                 f"Enter {enter_opp['kalshi_ticker']} "
+                                 f"(profit {rot['new_profit']:.1f}c) "
+                                 f"net improvement: +{rot['net_improvement']:.1f}c")
+                        scan_events.append(
+                            f"ROTATION: {exit_pos['kalshi_ticker']} -> {enter_opp['kalshi_ticker']} "
+                            f"(+{rot['net_improvement']:.1f}c improvement)")
+
+                        # Exit current position
+                        exit_result = exit_cross_arb(
+                            self.api, self.poly_api, exit_pos,
+                            dry_run=CFG.get("dry_run", True),
+                            parallel=use_parallel)
+
+                        if exit_result.get("success"):
+                            # Enter new position
+                            enter_result = execute_cross_arb(
+                                self.api, self.poly_api, enter_opp,
+                                max_cost=CFG.get("cross_arb_max_cost", 10.0),
+                                dry_run=CFG.get("dry_run", True),
+                                parallel=use_parallel)
+
+                            if enter_result.get("success"):
+                                log.info(f"  ROTATION COMPLETE: "
+                                         f"{enter_result['contracts']}x, "
+                                         f"expected profit ${enter_result['expected_profit']:.2f}")
+                                self.notifier.send(
+                                    f"ARB ROTATION: {enter_opp.get('title', '')[:40]}",
+                                    f"Exited: {exit_pos['kalshi_ticker']}\n"
+                                    f"Entered: {enter_opp['kalshi_ticker']}\n"
+                                    f"Net improvement: +{rot['net_improvement']:.1f}c\n"
+                                    f"Expected profit: ${enter_result['expected_profit']:.2f}")
+                            else:
+                                log.error(f"  ROTATION ENTRY FAILED: {enter_result.get('reason')}")
+                        else:
+                            log.error(f"  ROTATION EXIT FAILED: {exit_result.get('reason')}")
+
             except Exception as e:
                 log.error(f"Cross-platform arb phase failed: {e}")
 
