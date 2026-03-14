@@ -200,10 +200,13 @@ def scan_cross_platform_arbitrage(matches, kalshi_api, poly_api, fee_kalshi=0.07
             continue
         try:
             k_ob = kalshi_api.orderbook(km["ticker"])
+            MARKET_STATE.update_book(km["ticker"], k_ob, source="rest")
+            MARKET_STATE.record_feed_success("kalshi")
             k_book = k_ob.get("orderbook", {})
             yes_token = pm.get("token_id", "")
             if not yes_token: continue
             p_ob = poly_api.orderbook(yes_token)
+            MARKET_STATE.record_feed_success("polymarket")
             p_book = p_ob.get("orderbook", {})
             # Strategy 1: YES@Kalshi + NO@Polymarket
             k_yes = k_book.get("yes", []); p_no = p_book.get("no", [])

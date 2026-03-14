@@ -186,6 +186,20 @@ class Agent:
         if expired:
             log.info(f"Quick-flip exits: {len(expired)} positions closed, {len(self._quickflip_targets)} still open")
 
+    def _check_calibration_outcomes(self):
+        """Check if any predicted markets have settled and record outcomes."""
+        pending = [r for r in self.calibration.records if r.get("resolved") is None]
+        if not pending:
+            return
+        pending_tickers = list(set(r["ticker"] for r in pending))[:20]  # batch limit
+        try:
+            settlements = self.api.settled_markets(pending_tickers)
+            for tk, resolved_yes in settlements.items():
+                self.calibration.record_outcome(tk, resolved_yes)
+                log.info(f"  Calibration: {tk} resolved {'YES' if resolved_yes else 'NO'}")
+        except Exception as e:
+            log.debug(f"Calibration outcome check failed: {e}")
+
     def _is_ai_scan_due(self):
         mult = CFG.get("ai_scan_interval_multiplier", 5)
         return self._scan_number % mult == 0
@@ -242,6 +256,8 @@ class Agent:
         combined_bal = bal + poly_bal
         log.info(f"Balance: Kalshi ${bal:.2f} | Polymarket ${poly_bal:.2f} | Combined ${combined_bal:.2f}")
         scan_events.append(f"Balance: Kalshi ${bal:.2f} + Polymarket ${poly_bal:.2f} = ${combined_bal:.2f}")
+        # Check calibration outcomes for settled markets
+        self._check_calibration_outcomes()
         if combined_bal < 1:
             SHARED["status"] = "Low balance"
             scan_events.append("Scan aborted: combined balance below $1")
@@ -429,6 +445,11 @@ class Agent:
                 if qf_candidates:
                     for qf in qf_candidates[:3]:
                         m = qf["market"]
+                        # Execution policy check for quickflip
+                        qf_ok, qf_reason = should_quickflip(m)
+                        if not qf_ok:
+                            log.info(f"  QF BLOCKED: {m.get('title', '')[:40]} -- {qf_reason}")
+                            continue
                         log.info(f"  QF: {m.get('title', '')[:40]} -- {qf['side']} @{qf['entry_price']}c target:{qf['target_price']}c ROI:{qf['potential_roi']:.0f}%")
                         qf_max = CFG.get("quickflip_max_bet", 3.0)
                         if qf_max > 0:
@@ -565,6 +586,8 @@ class Agent:
             if poly_match and self.poly_api:
                 try:
                     ob = self.api.orderbook(tk)
+                    MARKET_STATE.update_book(tk, ob, source="rest")
+                    MARKET_STATE.record_feed_success("kalshi")
                     book = ob.get("orderbook", {})
                     yb = book.get("yes", book.get("yes_dollars", []))
                     nb = book.get("no", book.get("no_dollars", []))
@@ -575,21 +598,26 @@ class Agent:
                             ob_spread = int(by + bn - 100) if by + bn > 100 else int(100 - by - bn)
                             log.info(f"  Orderbook (Kalshi): YES={by}c NO={bn}c spread={ob_spread}c")
                 except Exception as e:
+                    MARKET_STATE.record_feed_error("kalshi")
                     log.debug(f"  Kalshi orderbook error: {e}")
                 try:
                     p_token = poly_match.get("token_id", "")
                     if p_token:
                         p_ob = self.poly_api.orderbook(p_token)
+                        MARKET_STATE.record_feed_success("polymarket")
                         p_book = p_ob.get("orderbook", {})
                         p_yes = p_book.get("yes", [])
                         if p_yes:
                             p_yes_price = _best_ask(p_yes)
                             log.info(f"  Orderbook (Polymarket): YES={p_yes_price}c")
                 except Exception as e:
+                    MARKET_STATE.record_feed_error("polymarket")
                     log.debug(f"  Polymarket orderbook error: {e}")
             else:
                 try:
                     ob = self.api.orderbook(tk)
+                    MARKET_STATE.update_book(tk, ob, source="rest")
+                    MARKET_STATE.record_feed_success("kalshi")
                     book = ob.get("orderbook", {})
                     yb = book.get("yes", book.get("yes_dollars", []))
                     nb = book.get("no", book.get("no_dollars", []))
@@ -602,6 +630,7 @@ class Agent:
                         else:
                             log.debug(f"  Orderbook: invalid prices for {tk}")
                 except Exception as e:
+                    MARKET_STATE.record_feed_error("kalshi")
                     log.debug(f"  Orderbook fetch error for {tk}: {e}")
 
             if ob_spread > 25:
@@ -689,6 +718,19 @@ class Agent:
             if ob_spread > 0 and abs(r["edge"]) < ob_spread * 0.3:
                 log.info(f"  -> SKIP: edge {r['edge']}% too small vs spread {ob_spread}c")
                 continue
+
+            # Execution policy: taker vs maker vs no_trade
+            book_state = MARKET_STATE.get_book(tk)
+            exec_plan = build_execution_plan(
+                ticker=tk, side=side_lower, probability=r["probability"],
+                confidence=r["confidence"], edge_pct=abs(r["edge"]),
+                price_cents=bp, contracts=contracts, hours_left=hrs,
+                platform=trade_platform, book=book_state)
+            if exec_plan.action == "no_trade":
+                log.info(f"  -> NO_TRADE: {exec_plan.reason}"); continue
+            # Use execution plan's price and log the decision
+            bp = exec_plan.price_cents
+            log.info(f"  Execution: {exec_plan.action} @ {bp}c (edge_after_fees={exec_plan.edge_after_fees_pct:.1f}%, urgency={exec_plan.urgency})")
 
             log.info(f"  * EXECUTE: BUY {r['side'].upper()} {contracts}x {tk} @{bp}c [{cat}] on {trade_platform.upper()}")
             scan_events.append(f"TRADE: BUY {r['side']} {contracts}x {tk} @{bp}c on {trade_platform} (conf={r['confidence']}% edge={r['edge']}%)")

@@ -101,6 +101,23 @@ class KalshiAPI:
 
     def orderbook(self, t): return self._req("GET", f"/markets/{t}/orderbook")
 
+    def get_market(self, ticker):
+        """Fetch a single market by ticker (includes result/settlement info)."""
+        return self._req("GET", f"/markets/{ticker}")
+
+    def settled_markets(self, tickers):
+        """Check resolution status for a list of tickers. Returns {ticker: resolved_yes}."""
+        results = {}
+        for tk in tickers:
+            try:
+                m = self.get_market(tk)
+                result = m.get("market", m).get("result", "")
+                if result in ("yes", "no"):
+                    results[tk] = (result == "yes")
+            except Exception:
+                continue
+        return results
+
     def positions(self):
         d = self._req("GET", "/portfolio/positions")
         return d.get("market_positions", d.get("positions", []))
