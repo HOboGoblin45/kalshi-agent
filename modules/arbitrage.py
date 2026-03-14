@@ -71,6 +71,62 @@ class ArbPositionTracker:
 ARB_TRACKER = ArbPositionTracker()
 
 
+def should_rotate_arb(current_positions, new_opportunities,
+                      kalshi_fee=0.07, poly_fee=0.02, min_improvement_cents=3.0):
+    """Determine if we should exit a current arb position to enter a better one.
+
+    Rotation is only worthwhile if the new opportunity's profit exceeds:
+    1. The current position's remaining profit (which may have changed since entry)
+    2. PLUS the round-trip exit cost (selling both legs of current + buying both legs of new)
+
+    Args:
+        current_positions: list of open ArbPosition dicts from ARB_TRACKER
+        new_opportunities: list of arb opportunity dicts from scan_cross_platform_arbitrage
+        kalshi_fee: Kalshi fee per contract in dollars
+        poly_fee: Polymarket fee per contract in dollars
+        min_improvement_cents: minimum net improvement to justify the churn
+
+    Returns:
+        list of rotation dicts with exit_position, enter_opportunity, net_improvement
+    """
+    if not current_positions or not new_opportunities:
+        return []
+
+    # Round-trip exit cost: sell both legs of current position
+    # = 2 legs x fee per leg (Kalshi exit fee + Polymarket exit fee)
+    exit_fee_cents = (kalshi_fee + poly_fee) * 100  # exit current position
+    entry_fee_cents = (kalshi_fee + poly_fee) * 100  # enter new position
+    total_rotation_cost = exit_fee_cents + entry_fee_cents
+
+    rotations = []
+
+    for pos in current_positions:
+        current_profit = pos.get("entry_profit_cents", 0)
+
+        for opp in new_opportunities:
+            new_profit = opp.get("profit_cents", 0)
+
+            # Skip if same market (can't rotate into what you already hold)
+            if opp.get("kalshi_ticker") == pos.get("kalshi_ticker"):
+                continue
+
+            net_improvement = new_profit - current_profit - total_rotation_cost
+
+            if net_improvement >= min_improvement_cents:
+                rotations.append({
+                    "exit_position": pos,
+                    "enter_opportunity": opp,
+                    "current_profit": current_profit,
+                    "new_profit": new_profit,
+                    "rotation_cost": total_rotation_cost,
+                    "net_improvement": round(net_improvement, 2),
+                })
+
+    # Sort by net improvement (best rotation first)
+    rotations.sort(key=lambda r: r["net_improvement"], reverse=True)
+    return rotations
+
+
 def _jaccard_similarity(s1, s2):
     w1 = set(s1.lower().split()); w2 = set(s2.lower().split())
     if not w1 or not w2: return 0.0
