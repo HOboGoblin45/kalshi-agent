@@ -884,6 +884,12 @@ def main():
                     help="Fetch recently resolved markets for forward backtesting and exit")
     ap.add_argument("--resolved-output", type=str, default="kalshi-resolved.json",
                     help="Output file for --collect-resolved (default: kalshi-resolved.json)")
+    ap.add_argument("--forward-backtest", action="store_true",
+                    help="Run forward backtest on resolved markets and exit")
+    ap.add_argument("--resolved", type=str, default="kalshi-resolved.json",
+                    help="Input file for --forward-backtest (default: kalshi-resolved.json)")
+    ap.add_argument("--forward-limit", type=int, default=0,
+                    help="Max markets to test in forward backtest (0=all)")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Force dry-run mode (default)")
     mode.add_argument("--live", action="store_true", help="Enable live order placement (requires explicit intent)")
@@ -964,6 +970,37 @@ def main():
         with open(out_path, "w") as f:
             json.dump(existing, f, indent=2)
         print(f"Collected {new_count} new resolved markets ({len(existing)} total) -> {out_path}")
+        return
+
+    if args.forward_backtest:
+        from modules.forward_backtest import run_forward_backtest, format_forward_report
+        from modules.backtester import _infer_category
+        resolved_path = args.resolved
+        if not os.path.exists(resolved_path):
+            print(f"Error: {resolved_path} not found. Run --collect-resolved first."); return
+        with open(resolved_path) as f:
+            resolved = json.load(f)
+        if args.forward_limit > 0:
+            resolved = resolved[:args.forward_limit]
+        print(f"Running forward backtest on {len(resolved)} resolved markets...")
+        debate = DebateEngine()
+        def debate_fn(market):
+            return debate.run_debate(market)
+        fb_result = run_forward_backtest(resolved, debate_fn, category_fn=_infer_category)
+        if args.backtest_json:
+            out = {
+                "total": fb_result.total,
+                "accuracy": round(fb_result.accuracy, 1),
+                "brier_score": round(fb_result.brier_score, 4),
+                "market_brier": round(fb_result.market_brier_score, 4),
+                "brier_skill": round(fb_result.brier_skill, 4),
+                "by_category": {k: dict(v) for k, v in fb_result.by_category.items()},
+                "errors": fb_result.errors,
+                "predictions": fb_result.predictions,
+            }
+            print(json.dumps(out, indent=2))
+        else:
+            print(format_forward_report(fb_result))
         return
 
     a = Agent()
