@@ -494,6 +494,79 @@ def execute_cross_arb(kalshi_api, poly_api, opp, max_cost=10.0, dry_run=False, p
             "execution_mode": "sequential"}
 
 
+def exit_cross_arb(kalshi_api, poly_api, position, dry_run=False, parallel=False):
+    """Exit an open cross-platform arb position by selling both legs.
+
+    Args:
+        position: dict from ARB_TRACKER.get_open_positions()
+        dry_run: if True, log but don't execute
+        parallel: if True, sell both legs simultaneously
+
+    Returns:
+        dict with success status
+    """
+    key = position.get("key", position.get("kalshi_ticker", "?"))
+    contracts = position.get("contracts", 0)
+    if contracts == 0:
+        return {"success": False, "reason": "Zero contracts to exit"}
+
+    k_ticker = position["kalshi_ticker"]
+    p_token = position["poly_token"]
+    strategy = position.get("strategy_desc", "")
+
+    # Determine which sides to sell (opposite of what we bought)
+    if "YES@Kalshi" in strategy or "YES on Kalshi" in strategy:
+        k_sell_side = "yes"
+    else:
+        k_sell_side = "no"
+
+    if "YES@Polymarket" in strategy or "YES on Polymarket" in strategy:
+        p_sell_side = "yes"
+    else:
+        p_sell_side = "no"
+
+    log.info(f"  ARB EXIT: {k_ticker} -- selling {contracts}x on both platforms")
+
+    if dry_run:
+        ARB_TRACKER.record_exit(key, reason="dry_run_exit")
+        return {"success": True, "dry_run": True, "contracts": contracts}
+
+    def _sell_kalshi():
+        sell_price = max(1, position.get("k_entry_price", 50) - 3)
+        kalshi_api.place_order(k_ticker, k_sell_side, contracts, sell_price)
+        return True
+
+    def _sell_poly():
+        sell_price = max(1, position.get("p_entry_price", 50) - 3)
+        poly_api.place_order(p_token, "no" if p_sell_side == "yes" else "yes", contracts, sell_price)
+        return True
+
+    if parallel:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(_sell_kalshi)
+            f2 = pool.submit(_sell_poly)
+            try:
+                f1.result(timeout=30)
+                f2.result(timeout=30)
+                ARB_TRACKER.record_exit(key, reason="rotation")
+                return {"success": True, "contracts": contracts}
+            except Exception as e:
+                log.error(f"  ARB EXIT partially failed: {e}")
+                ARB_TRACKER.record_exit(key, reason=f"partial_exit: {e}")
+                return {"success": False, "reason": str(e)}
+    else:
+        try:
+            _sell_kalshi()
+            time.sleep(1)
+            _sell_poly()
+            ARB_TRACKER.record_exit(key, reason="rotation")
+            return {"success": True, "contracts": contracts}
+        except Exception as e:
+            log.error(f"  ARB EXIT failed: {e}")
+            return {"success": False, "reason": str(e)}
+
+
 def route_order(side, kalshi_price, poly_price, kalshi_fee=0.07, poly_fee=0.02):
     """Route to the platform with the best effective price."""
     k_eff = kalshi_price + kalshi_fee * 100; p_eff = poly_price + poly_fee * 100
