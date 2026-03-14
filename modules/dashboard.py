@@ -1,5 +1,5 @@
 """Web dashboard + React frontend server for monitoring agent activity."""
-import json, os, threading, mimetypes
+import json, os, time, threading, mimetypes
 import http.server
 from urllib.parse import unquote
 import hmac
@@ -7,6 +7,8 @@ import hmac
 from modules.config import CFG, SHARED, SHARED_LOCK, log
 from modules.market_state import MARKET_STATE
 from modules.calibration import CalibrationTracker
+
+_START_TIME = time.time()  # Track uptime
 
 # Resolve the dist/ directory (built React app)
 # Works in both dev (source tree) and packaged (Electron asar) environments
@@ -78,6 +80,7 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
         if self.path == '/api/trades': return self._json(self._trades())
         if self.path == '/api/calibration': return self._json(self._calibration())
         if self.path == '/api/risk-stats': return self._json(self._risk_stats())
+        if self.path == '/api/health': return self._json(self._health())
 
         # Serve built React app from dist/
         if os.path.isdir(_DIST_DIR):
@@ -266,6 +269,51 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
         except Exception:
             return {"drawdown_probs": {}, "peak_balance": 0, "current_balance": 0,
                     "n_trades": 0, "growth_rate": 0, "volatility": 0}
+
+    def _health(self):
+        """Health check endpoint for monitoring (UptimeRobot, etc)."""
+        import datetime
+        with SHARED_LOCK:
+            balance = SHARED.get("balance", 0)
+            poly_bal = SHARED.get("poly_balance", 0)
+            last_scan = SHARED.get("last_scan", "")
+            status = SHARED.get("status", "unknown")
+            scan_count = SHARED.get("scan_count", 0)
+            positions = SHARED.get("_positions", [])
+            trades = SHARED.get("_trades", [])
+
+        uptime_hours = round((time.time() - _START_TIME) / 3600, 1)
+
+        # Seconds since last scan
+        secs_since_scan = None
+        if last_scan:
+            try:
+                today = datetime.date.today()
+                last_dt = datetime.datetime.combine(
+                    today, datetime.datetime.strptime(last_scan, "%H:%M:%S").time())
+                secs_since_scan = int((datetime.datetime.now() - last_dt).total_seconds())
+                if secs_since_scan < 0:
+                    secs_since_scan += 86400  # wrapped past midnight
+            except Exception:
+                pass
+
+        # Count errors in recent trades
+        errors_24h = sum(1 for t in trades
+                        if t.get("status") == "error"
+                        and t.get("time", "")[:10] == datetime.date.today().isoformat())
+
+        return {
+            "status": status,
+            "uptime_hours": uptime_hours,
+            "last_scan": last_scan,
+            "seconds_since_last_scan": secs_since_scan,
+            "scan_count": scan_count,
+            "open_positions": len(positions),
+            "balance_kalshi": round(balance, 2),
+            "balance_polymarket": round(poly_bal, 2),
+            "balance_combined": round(balance + poly_bal, 2),
+            "errors_last_24h": errors_24h,
+        }
 
     def log_message(self, *a):
         pass

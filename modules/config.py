@@ -175,6 +175,8 @@ def load_config(config_path=None, live_mode=False):
         "POLYMARKET_API_PASSPHRASE": "polymarket_api_passphrase",
         "POLYMARKET_FUNDER": "polymarket_funder",
         "KALSHI_DASHBOARD_TOKEN": "dashboard_token",
+        "KALSHI_DASHBOARD_HOST": "dashboard_host",
+        "KALSHI_DASHBOARD_PORT": None,  # handled as int below
         "KALSHI_ENVIRONMENT": "environment",
         "KALSHI_DRY_RUN": None,  # handled specially below
     }
@@ -182,6 +184,14 @@ def load_config(config_path=None, live_mode=False):
         val = os.environ.get(env_var)
         if val and cfg_key:
             CFG[cfg_key] = val
+
+    # Dashboard port from env (needs int conversion)
+    env_port = os.environ.get("KALSHI_DASHBOARD_PORT")
+    if env_port:
+        try:
+            CFG["dashboard_port"] = int(env_port)
+        except ValueError:
+            pass
 
     # Live mode: only explicit --live flag enables it
     if live_mode:
