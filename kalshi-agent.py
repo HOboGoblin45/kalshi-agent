@@ -1012,6 +1012,8 @@ def main():
                     help="Input file for --forward-backtest (default: kalshi-resolved.json)")
     ap.add_argument("--forward-limit", type=int, default=0,
                     help="Max markets to test in forward backtest (0=all)")
+    ap.add_argument("--mm", action="store_true",
+                    help="Enable market making on crypto bracket markets (zero AI cost)")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Force dry-run mode (default)")
     mode.add_argument("--live", action="store_true", help="Enable live order placement (requires explicit intent)")
@@ -1026,6 +1028,11 @@ def main():
     if CFG.get("polymarket_private_key") and not CFG.get("polymarket_enabled"):
         CFG["polymarket_enabled"] = True
         log.info("Polymarket auto-enabled (private key detected)")
+
+    # Enable market making via CLI flag
+    if args.mm:
+        CFG["mm_enabled"] = True
+        CFG["crypto_mm_enabled"] = True
 
     if args.backtest:
         from modules.backtester import run_backtest, analyze_calibration, format_report
