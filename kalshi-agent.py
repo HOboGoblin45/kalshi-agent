@@ -28,7 +28,8 @@ from modules.data_fetcher import DataFetcher
 from modules.notifier import Notifier, PerformanceReporter
 from modules.risk import RiskMgr, ExitManager
 from modules.debate import DebateEngine
-from modules.scoring import kelly, calc_hours_left, score_market, filter_and_rank
+from modules.scoring import kelly, calc_hours_left, score_market, filter_and_rank, is_execution_eligible
+from modules.calibration import CalibrationTracker
 from modules.arbitrage import (
     match_markets, scan_cross_platform_arbitrage, execute_cross_arb,
     scan_arbitrage, _best_ask, _estimate_slippage, route_order, get_best_price,
@@ -45,6 +46,7 @@ class Agent:
         self.api = KalshiAPI(); self.debate = DebateEngine()
         self.risk = RiskMgr(); self.cache = MarketCache(self.api)
         self.data = DataFetcher()
+        self.calibration = CalibrationTracker()
         self.notifier = Notifier()
         self.reporter = PerformanceReporter(self.risk, self.notifier)
         self.stop_event = threading.Event()
@@ -673,6 +675,11 @@ class Agent:
             log.info(f"  Kelly: {contracts}x {r['side']} @{bp}c = ${cost:.2f} +${fees:.2f}fee {platform_tag}")
             log.info(f"  If correct: ${net_profit:.2f} net ({roi_pct:.0f}% ROI)")
 
+            # Check execution eligibility (liquidity, parlay legs, expiry)
+            eligible, elig_reason = is_execution_eligible(mkt)
+            if not eligible:
+                log.info(f"  -> INELIGIBLE: {elig_reason}"); continue
+
             ok, reason = self.risk.check(total, r["confidence"], abs(r["edge"]))
             if not ok: log.info(f"  -> BLOCKED: {reason}"); continue
             if net_profit <= 0: log.info("  -> SKIP: not profitable after fees"); continue
@@ -700,6 +707,11 @@ class Agent:
                 self.risk.record(tk, mkt.get("title", ""), side_lower, contracts, bp,
                     r["confidence"], r["edge"], r["evidence"], r["bull_prob"], r["bear_prob"],
                     probability=r["probability"], platform=trade_platform)
+                self.calibration.record_prediction(
+                    ticker=tk, side=r["side"], probability=r["probability"],
+                    confidence=r["confidence"], market_price=bp, edge=r["edge"],
+                    category=cat, bull_prob=r["bull_prob"], bear_prob=r["bear_prob"],
+                    debate_spread=r.get("debate_spread", 0))
                 self.notifier.notify_trade({"ticker": tk, "title": mkt.get("title", ""),
                     "side": r["side"], "contracts": contracts, "price_cents": bp, "cost": cost,
                     "edge": r["edge"], "confidence": r["confidence"],
