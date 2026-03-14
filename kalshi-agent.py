@@ -76,6 +76,11 @@ class Agent:
         self.exit_mgr = ExitManager(self.api, self.risk, self.notifier, poly_api=self.poly_api)
         self.maker_mgr = MakerOrderManager(self.api)
         self.ws_feed = KalshiWSFeed()
+        # Market maker (zero AI cost revenue layer)
+        from modules.market_maker import MarketMaker
+        self.market_maker = MarketMaker(self.api)
+        if CFG.get("mm_enabled", False):
+            self.market_maker.start()
         self._ws_started = False
 
     @staticmethod
@@ -347,6 +352,56 @@ class Agent:
         if active_categories:
             log.info(f"Active market categories: {', '.join(sorted(active_categories))}")
         self.data.fetch_all(market_categories=active_categories if active_categories else None)
+
+        # ══════════════════════════════════════
+        # PHASE 0: CRYPTO MARKET MAKING (zero AI cost)
+        # ══════════════════════════════════════
+        if CFG.get("mm_enabled", False):
+            self._update_progress(0, "Market Making", "Scanning crypto brackets...", total_phases + 1)
+            try:
+                from modules.crypto_markets import CryptoMarketDiscovery, BTCPriceFeed
+
+                if not hasattr(self, '_crypto_discovery'):
+                    self._crypto_discovery = CryptoMarketDiscovery(self.api)
+                    self._btc_feed = BTCPriceFeed()
+
+                # Refresh BTC price
+                btc_price = self._btc_feed.fetch()
+                if btc_price:
+                    log.info(f"  BTC price: ${btc_price:,.2f}")
+
+                # Discover active events
+                events = self._crypto_discovery.scan_active_events()
+
+                for event in events:
+                    # Check for sum-to-100 arbitrage
+                    sum_arb = event.find_sum_arb()
+                    if sum_arb:
+                        log.info(f"  SUM ARB: {event.event_ticker} -- {sum_arb}")
+                        scan_events.append(f"SUM-ARB: {event.event_ticker}")
+
+                    # Quote active brackets
+                    candidates = event.active_brackets(
+                        min_volume=CFG.get("mm_min_volume", 0))
+                    top_n = CFG.get("mm_max_markets_per_event", 5)
+
+                    for bracket in candidates[:top_n]:
+                        fair_value = self._btc_feed.bracket_fair_value(
+                            bracket, btc_price)
+                        if 5 <= fair_value <= 95:
+                            self.market_maker.quote_market(
+                                bracket["ticker"],
+                                fair_value_cents=fair_value,
+                                event_ticker=event.event_ticker)
+
+                mm_summary = self.market_maker.summary()
+                scan_events.append(
+                    f"MM: {mm_summary['markets_quoted']} markets, "
+                    f"{mm_summary['active_quotes']} quotes, "
+                    f"fills={mm_summary['total_fills']}")
+
+            except Exception as e:
+                log.error(f"  Market making phase failed: {e}")
 
         # ══════════════════════════════════════
         # PHASE 1: CROSS-PLATFORM ARBITRAGE
@@ -1089,7 +1144,10 @@ def main():
                 except Exception: pass
         if args.scan_once: a.scan()
         else: a.run()
-    except KeyboardInterrupt: log.info("\nStopped.")
+    except KeyboardInterrupt:
+        log.info("\nStopped.")
+        if hasattr(a, 'market_maker') and a.market_maker.is_active():
+            a.market_maker.stop()
     except Exception as e: log.error(f"Fatal: {e}"); traceback.print_exc(); sys.exit(1)
 
 if __name__ == "__main__": main()
