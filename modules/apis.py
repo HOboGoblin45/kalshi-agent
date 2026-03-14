@@ -105,6 +105,15 @@ class KalshiAPI:
         """Fetch a single market by ticker (includes result/settlement info)."""
         return self._req("GET", f"/markets/{ticker}")
 
+    def closed_markets(self, limit=200):
+        """Fetch recently settled/closed markets for backtesting."""
+        out, cur = [], None
+        for _ in range(5):
+            q = f"/markets?limit={min(limit, 200)}&status=settled" + (f"&cursor={cur}" if cur else "")
+            d = self._req("GET", q); out.extend(d.get("markets", [])); cur = d.get("cursor")
+            if not cur or len(out) >= limit: break
+        return out
+
     def settled_markets(self, tickers):
         """Check resolution status for a list of tickers. Returns {ticker: resolved_yes}."""
         results = {}

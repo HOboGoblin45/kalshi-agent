@@ -880,6 +880,10 @@ def main():
     ap.add_argument("--report", action="store_true", help="Generate performance report and exit")
     ap.add_argument("--backtest", action="store_true", help="Run backtest on kalshi-trades.json and exit")
     ap.add_argument("--backtest-json", action="store_true", help="Output backtest results as JSON")
+    ap.add_argument("--collect-resolved", action="store_true",
+                    help="Fetch recently resolved markets for forward backtesting and exit")
+    ap.add_argument("--resolved-output", type=str, default="kalshi-resolved.json",
+                    help="Output file for --collect-resolved (default: kalshi-resolved.json)")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Force dry-run mode (default)")
     mode.add_argument("--live", action="store_true", help="Enable live order placement (requires explicit intent)")
@@ -924,6 +928,42 @@ def main():
             print(json.dumps(out, indent=2))
         else:
             print(format_report(result, calibration))
+        return
+
+    if args.collect_resolved:
+        api = KalshiAPI()
+        print("Fetching recently resolved markets...")
+        markets = api.closed_markets(limit=200)
+        # Load existing resolved data to avoid duplicates
+        out_path = args.resolved_output
+        existing = []
+        if os.path.exists(out_path):
+            with open(out_path) as f:
+                existing = json.load(f)
+        seen = {m["ticker"] for m in existing}
+        new_count = 0
+        for m in markets:
+            ticker = m.get("ticker", "")
+            if ticker in seen:
+                continue
+            result_val = m.get("result", "")
+            if result_val not in ("yes", "no"):
+                continue
+            record = {
+                "ticker": ticker,
+                "title": m.get("title", ""),
+                "category": m.get("category", ""),
+                "result": result_val,
+                "close_time": m.get("close_time", ""),
+                "yes_ask": m.get("yes_ask", 0),
+                "no_ask": m.get("no_ask", 0),
+                "volume": m.get("volume", 0),
+            }
+            existing.append(record)
+            new_count += 1
+        with open(out_path, "w") as f:
+            json.dump(existing, f, indent=2)
+        print(f"Collected {new_count} new resolved markets ({len(existing)} total) -> {out_path}")
         return
 
     a = Agent()
