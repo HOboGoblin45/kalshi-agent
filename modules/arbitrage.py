@@ -1,8 +1,74 @@
 """Cross-platform matching, arbitrage scanning, routing, and within-market arbitrage."""
 import os, json, time, datetime
+import threading
 
 from modules.config import CFG, log, parse_orderbook_price
 from modules.market_state import MARKET_STATE
+
+
+class ArbPositionTracker:
+    """Track open cross-platform arbitrage positions for rotation decisions.
+
+    An arb position consists of two legs (one on Kalshi, one on Polymarket)
+    that together guarantee a payout. We track these so the rotation engine
+    can compare the current position's remaining profit against new opportunities.
+    """
+
+    def __init__(self):
+        self._positions = {}  # key -> ArbPosition dict
+        self._lock = threading.Lock()
+
+    def record_entry(self, key, kalshi_ticker, poly_token, strategy_desc,
+                     k_price, p_price, contracts, profit_cents, entry_time=None):
+        """Record a new arb position after both legs fill."""
+        with self._lock:
+            self._positions[key] = {
+                "kalshi_ticker": kalshi_ticker,
+                "poly_token": poly_token,
+                "strategy_desc": strategy_desc,
+                "k_entry_price": k_price,
+                "p_entry_price": p_price,
+                "contracts": contracts,
+                "entry_profit_cents": profit_cents,
+                "entry_time": entry_time or time.time(),
+                "status": "open",
+            }
+
+    def record_exit(self, key, reason="manual"):
+        """Mark a position as closed."""
+        with self._lock:
+            if key in self._positions:
+                self._positions[key]["status"] = "closed"
+                self._positions[key]["exit_time"] = time.time()
+                self._positions[key]["exit_reason"] = reason
+
+    def get_open_positions(self):
+        """Return list of open arb positions."""
+        with self._lock:
+            return [dict(pos, key=k) for k, pos in self._positions.items()
+                    if pos["status"] == "open"]
+
+    def get_position(self, key):
+        """Get a specific position by key."""
+        with self._lock:
+            return self._positions.get(key)
+
+    def has_open_positions(self):
+        with self._lock:
+            return any(p["status"] == "open" for p in self._positions.values())
+
+    def clear_closed(self, max_age_hours=24):
+        """Remove closed positions older than max_age_hours."""
+        cutoff = time.time() - max_age_hours * 3600
+        with self._lock:
+            self._positions = {
+                k: v for k, v in self._positions.items()
+                if v["status"] == "open" or v.get("exit_time", time.time()) > cutoff
+            }
+
+
+# Module-level singleton
+ARB_TRACKER = ArbPositionTracker()
 
 
 def _jaccard_similarity(s1, s2):
