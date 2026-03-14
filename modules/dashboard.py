@@ -5,6 +5,7 @@ from urllib.parse import unquote
 import hmac
 
 from modules.config import CFG, SHARED, SHARED_LOCK, log
+from modules.market_state import MARKET_STATE
 
 # Resolve the dist/ directory (built React app)
 # Works in both dev (source tree) and packaged (Electron asar) environments
@@ -173,7 +174,9 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
             "cross_arb_opps": SHARED.get("_cross_arb_opportunities", 0),
             "quickflip_active": SHARED.get("_quickflip_active", 0),
             "scan_progress": SHARED.get("_scan_progress", {"phase": "idle", "step": "", "pct": 0, "total_phases": 0, "current_phase": 0}),
-            "scan_summary": SHARED.get("_scan_summary", "")}
+            "scan_summary": SHARED.get("_scan_summary", ""),
+            "feed_health": MARKET_STATE.feed_status(),
+            "stale_markets": len(MARKET_STATE.stale_tickers())}
 
     def _markets(self):
         return SHARED.get("_cached_markets", [])

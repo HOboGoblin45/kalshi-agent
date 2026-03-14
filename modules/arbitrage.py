@@ -2,6 +2,7 @@
 import os, json, time
 
 from modules.config import CFG, log, parse_orderbook_price
+from modules.market_state import MARKET_STATE
 
 # Import shared implementations from scripts/
 from cross_platform import (
@@ -270,44 +271,69 @@ def get_best_price(ticker, kalshi_api, poly_match, poly_api, side, kalshi_fee=0.
 
 
 def scan_arbitrage(api, markets, ob_cache=None):
-    """Check for within-market YES+NO < 100c arbitrage."""
+    """Check for within-market YES+NO < 100c arbitrage.
+
+    Uses MARKET_STATE store for book caching and staleness tracking.
+    """
     opportunities = []
     skipped = 0
     candidates = [m for m in markets if (m.get("volume", 0) or 0) >= 50][:100]
     for m in candidates:
+        tk = m["ticker"]
         try:
-            ob = api.orderbook(m["ticker"])
-            book = ob.get("orderbook", {})
-            yes_bids = book.get("yes", book.get("yes_dollars", []))
-            no_bids = book.get("no", book.get("no_dollars", []))
-            if not yes_bids or not no_bids: continue
-            raw_yes = yes_bids[0][0] if isinstance(yes_bids[0], list) else yes_bids[0]
-            raw_no = no_bids[0][0] if isinstance(no_bids[0], list) else no_bids[0]
-            best_yes = parse_orderbook_price(raw_yes)
-            best_no = parse_orderbook_price(raw_no)
-            if best_yes is None or best_no is None: continue
+            # Check for fresh cached book state first
+            cached_book = MARKET_STATE.get_book_if_fresh(tk)
+            if cached_book:
+                best_yes = cached_book.best_yes_bid
+                best_no = cached_book.best_no_bid
+                if best_yes is None or best_no is None:
+                    continue
+                # Use ob_cache for change detection
+                if ob_cache is not None:
+                    prev = ob_cache.get(tk)
+                    if prev:
+                        _, old_yes, old_no = prev
+                        if old_yes == best_yes and old_no == best_no:
+                            skipped += 1; continue
+                    ob_cache[tk] = (time.time(), best_yes, best_no)
+            else:
+                # Fetch fresh book from API and update state store
+                ob = api.orderbook(tk)
+                book_state = MARKET_STATE.update_book(tk, ob, source="rest")
+                MARKET_STATE.record_feed_success("kalshi")
 
-            if ob_cache is not None:
-                tk = m["ticker"]
-                cached = ob_cache.get(tk)
-                now = time.time()
-                if cached:
-                    ts, old_yes, old_no = cached
-                    if now - ts < 180 and old_yes == best_yes and old_no == best_no:
-                        skipped += 1; continue
-                ob_cache[tk] = (now, best_yes, best_no)
+                book = ob.get("orderbook", {})
+                yes_bids = book.get("yes", book.get("yes_dollars", []))
+                no_bids = book.get("no", book.get("no_dollars", []))
+                if not yes_bids or not no_bids: continue
+                raw_yes = yes_bids[0][0] if isinstance(yes_bids[0], list) else yes_bids[0]
+                raw_no = no_bids[0][0] if isinstance(no_bids[0], list) else no_bids[0]
+                best_yes = parse_orderbook_price(raw_yes)
+                best_no = parse_orderbook_price(raw_no)
+                if best_yes is None or best_no is None: continue
+
+                if ob_cache is not None:
+                    prev = ob_cache.get(tk)
+                    now = time.time()
+                    if prev:
+                        ts, old_yes, old_no = prev
+                        if now - ts < 180 and old_yes == best_yes and old_no == best_no:
+                            skipped += 1; continue
+                    ob_cache[tk] = (now, best_yes, best_no)
 
             total_cost = best_yes + best_no
             fee_cost = CFG["taker_fee_per_contract"] * 2 * 100
             if total_cost + fee_cost < 100:
                 profit_cents = 100 - total_cost - fee_cost
                 opportunities.append({
-                    "ticker": m["ticker"], "title": m.get("title", ""),
+                    "ticker": tk, "title": m.get("title", ""),
                     "yes_price": best_yes, "no_price": best_no,
                     "total_cost": total_cost, "profit_cents": profit_cents,
                     "type": "arbitrage",
                 })
-        except Exception: continue
+        except Exception as e:
+            MARKET_STATE.record_feed_error("kalshi")
+            continue
         time.sleep(0.1)
     if skipped: log.debug(f"  Arb scan: skipped {skipped} unchanged orderbooks")
     opportunities.sort(key=lambda x: x["profit_cents"], reverse=True)
