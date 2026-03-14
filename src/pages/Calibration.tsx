@@ -17,21 +17,35 @@ interface CalibrationData {
   category_stats: Record<string, CategoryStat>;
 }
 
+interface RiskStats {
+  drawdown_probs: Record<string, number>;
+  peak_balance: number;
+  current_balance: number;
+  current_drawdown_pct: number;
+  n_trades: number;
+  growth_rate: number;
+  volatility: number;
+  kelly_edge_ratio: number;
+}
+
 export default function Calibration() {
   const [data, setData] = useState<CalibrationData | null>(null);
+  const [riskStats, setRiskStats] = useState<RiskStats | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/calibration")
-      .then((r) => r.json())
-      .then((d) => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
+    Promise.all([
+      fetch("/api/calibration").then((r) => r.json()),
+      fetch("/api/risk-stats").then((r) => r.json()),
+    ]).then(([cal, risk]) => {
+      setData(cal);
+      setRiskStats(risk);
+      setLoading(false);
+    }).catch(() => setLoading(false));
 
     const interval = setInterval(() => {
-      fetch("/api/calibration")
-        .then((r) => r.json())
-        .then(setData)
-        .catch(() => {});
+      fetch("/api/calibration").then((r) => r.json()).then(setData).catch(() => {});
+      fetch("/api/risk-stats").then((r) => r.json()).then(setRiskStats).catch(() => {});
     }, 30000);
     return () => clearInterval(interval);
   }, []);
@@ -105,6 +119,46 @@ export default function Calibration() {
           <span className="text-accent-red">0.50+ (bad)</span>
         </div>
       </div>
+
+      {/* Drawdown Probability Widget */}
+      {riskStats && riskStats.n_trades >= 2 && (
+        <div className="card mb-3">
+          <div className="text-[10px] text-text-tertiary uppercase tracking-wider mb-2">
+            -- DRAWDOWN RISK ANALYSIS --
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-3">
+            <Metric label="GROWTH RATE" value={`${riskStats.growth_rate}%`}
+              color={riskStats.growth_rate > 0 ? "text-accent-green" : "text-accent-red"} />
+            <Metric label="VOLATILITY" value={`${riskStats.volatility}%`} />
+            <Metric label="KELLY RATIO" value={riskStats.kelly_edge_ratio.toFixed(3)}
+              color={riskStats.kelly_edge_ratio > 0.5 ? "text-accent-green" : "text-accent-gold"} />
+            <Metric label="CURR DRAWDOWN" value={`${riskStats.current_drawdown_pct}%`}
+              color={riskStats.current_drawdown_pct < 5 ? "text-accent-green" :
+                     riskStats.current_drawdown_pct < 15 ? "text-accent-gold" : "text-accent-red"} />
+          </div>
+          <div className="text-[10px] text-text-tertiary mb-1">
+            P(drawdown reaches X%) — lower is safer:
+          </div>
+          <div className="grid grid-cols-7 gap-1">
+            {["5", "10", "15", "20", "25", "30", "50"].map((dd) => {
+              const prob = riskStats.drawdown_probs[dd] ?? 0;
+              const color = prob < 20 ? "text-accent-green" :
+                           prob < 50 ? "text-accent-gold" : "text-accent-red";
+              return (
+                <div key={dd} className="text-center">
+                  <div className="text-[9px] text-text-tertiary">{dd}%</div>
+                  <div className={`text-[11px] font-bold ${color}`}>{prob}%</div>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex justify-between text-[9px] text-text-tertiary mt-1">
+            <span>Peak: ${riskStats.peak_balance.toFixed(2)}</span>
+            <span>Current: ${riskStats.current_balance.toFixed(2)}</span>
+            <span>Trades: {riskStats.n_trades}</span>
+          </div>
+        </div>
+      )}
 
       {/* Category breakdown */}
       {categories.length > 0 && (

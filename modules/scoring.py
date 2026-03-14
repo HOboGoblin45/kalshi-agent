@@ -6,6 +6,111 @@ from modules.config import CFG, log
 from modules.precision import to_decimal, MONEY_PLACES
 
 
+# ── Upgrade 3: Category-Specific Kelly Caps ──
+# Max Kelly fraction per category. Categories with stronger data edges
+# can tolerate larger positions; speculative categories are capped lower.
+DEFAULT_CATEGORY_KELLY_CAPS = {
+    "weather":    0.25,   # Strong data edge (NWS, NOAA)
+    "fed_rates":  0.22,   # Reliable public data (FOMC dots)
+    "inflation":  0.20,   # CPI/PCE published data
+    "employment": 0.20,   # BLS data
+    "sports":     0.12,   # High variance, limited edge
+    "crypto":     0.10,   # Very high variance
+    "policy":     0.12,   # Speculative, hard to model
+    "energy":     0.15,   # Moderate data availability
+    "gdp_growth": 0.15,   # Moderate data
+    "markets":    0.12,   # Random walk assumption
+    "other":      0.10,   # Unknown category, be cautious
+}
+
+
+def thorp_concurrent_reduction(kelly_fraction, n_concurrent_bets):
+    """Thorp's simultaneous bet reduction: f_adj = f / sqrt(n).
+
+    With more concurrent positions, each individual bet should be smaller
+    to maintain the same overall risk level.
+
+    - 1 bet: full Kelly
+    - 4 bets: half Kelly
+    - 9 bets: 1/3 Kelly
+    """
+    import math
+    n = max(1, n_concurrent_bets)
+    return kelly_fraction / math.sqrt(n)
+
+
+def bayesian_kelly_prob(raw_prob_pct, category_wins, category_total, prior_alpha=2, prior_beta=2):
+    """Bayesian shrinkage of probability estimate using Beta-Binomial posterior.
+
+    Shrinks our raw probability toward 50% based on how much calibration data
+    we have for this category. With few observations, heavy shrinkage. With
+    many observations and good calibration, minimal shrinkage.
+
+    p_adjusted = (α + wins) / (α + β + n)
+    Then blend: p_final = weight * raw_prob + (1 - weight) * p_posterior
+    where weight = n / (n + α + β)  -- grows toward 1 as data accumulates.
+
+    Returns adjusted probability percentage (0-100).
+    """
+    n = max(0, category_total)
+    wins = max(0, min(n, category_wins))
+
+    # Posterior mean from Beta-Binomial
+    posterior_mean = (prior_alpha + wins) / (prior_alpha + prior_beta + n)
+
+    # Weight: how much to trust our raw estimate vs the posterior
+    # With 0 data: weight ≈ 0 (full shrinkage toward 50%)
+    # With 20+ data: weight ≈ 0.83+ (mostly trust raw prob)
+    weight = n / (n + prior_alpha + prior_beta) if (n + prior_alpha + prior_beta) > 0 else 0
+
+    raw_frac = raw_prob_pct / 100.0
+    adjusted = weight * raw_frac + (1 - weight) * posterior_mean
+
+    # Clamp to [1, 99] to avoid extreme positions
+    return max(1.0, min(99.0, adjusted * 100.0))
+
+
+def debate_spread_kelly_mult(debate_spread_pct):
+    """Continuous Kelly multiplier based on bull-bear debate spread.
+
+    When bull and bear disagree strongly (high spread), reduce Kelly.
+    When they agree (low spread), full Kelly.
+
+    Formula: mult = max(0.3, 1 - spread/50)
+    - spread=0% → mult=1.0 (full agreement, full Kelly)
+    - spread=20% → mult=0.6 (moderate disagreement)
+    - spread>=35% → mult=0.3 (floor, high disagreement)
+    """
+    spread = max(0, abs(debate_spread_pct))
+    return max(0.3, 1.0 - spread / 50.0)
+
+
+def get_category_kelly_cap(category, user_caps=None):
+    """Get the max Kelly fraction for a category.
+
+    User can override defaults via config 'category_kelly_caps'.
+    """
+    caps = {**DEFAULT_CATEGORY_KELLY_CAPS}
+    if user_caps:
+        caps.update(user_caps)
+    return caps.get(category, caps.get("other", 0.10))
+
+
+def dynamic_min_edge(price_cents, fee_per_contract=0.07, base_min_edge=1.0):
+    """Dynamic fee-drag minimum edge: 2 * fee / price + base%.
+
+    At low prices, fee drag is large (e.g., 7c fee on 10c contract = 140%).
+    At high prices, fee drag shrinks (7c on 50c = 28%).
+    This ensures we never trade when fees eat the edge.
+
+    Returns min edge as a percentage.
+    """
+    if price_cents <= 0:
+        return 99.0
+    fee_drag_pct = (2 * fee_per_contract * 100) / price_cents
+    return fee_drag_pct + base_min_edge
+
+
 def kelly(prob_pct, price_cents, bankroll, max_bet, fee, fraction=0.20):
     """Kelly criterion position sizing with fee-aware EV.
 

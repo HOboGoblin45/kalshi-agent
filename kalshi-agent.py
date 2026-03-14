@@ -28,7 +28,9 @@ from modules.data_fetcher import DataFetcher
 from modules.notifier import Notifier, PerformanceReporter
 from modules.risk import RiskMgr, ExitManager
 from modules.debate import DebateEngine
-from modules.scoring import kelly, calc_hours_left, score_market, filter_and_rank, is_execution_eligible
+from modules.scoring import (kelly, calc_hours_left, score_market, filter_and_rank,
+    is_execution_eligible, dynamic_min_edge, get_category_kelly_cap,
+    debate_spread_kelly_mult, bayesian_kelly_prob, thorp_concurrent_reduction)
 from modules.calibration import CalibrationTracker
 from modules.execution import build_execution_plan, should_quickflip, MakerOrderManager
 from modules.market_state import MARKET_STATE
@@ -697,9 +699,48 @@ class Agent:
 
             trade_fee = CFG["taker_fee_per_contract"] if trade_platform == "kalshi" else CFG.get("polymarket_fee_per_contract", 0.00)
 
-            pfk = r["probability"] if r["side"] == "YES" else 100 - r["probability"]
-            contracts, cost = kelly(pfk, bp, combined_bal, active_max_bet, trade_fee, active_kelly)
+            # ── Upgrade 1: Bayesian Modified Kelly Probability ──
+            # ── Upgrade 8: Realized-Edge Recalibration (adaptive priors) ──
+            raw_prob = r["probability"]
+            cat_stats = self.calibration.category_stats().get(cat, {})
+            prior_a, prior_b = self.calibration.adaptive_prior(cat)
+            bayes_prob = bayesian_kelly_prob(
+                raw_prob, cat_stats.get("wins", 0), cat_stats.get("total", 0),
+                prior_alpha=prior_a, prior_beta=prior_b)
+            if abs(bayes_prob - raw_prob) > 1:
+                log.info(f"  Bayesian shrinkage: prob {raw_prob}% -> {bayes_prob:.1f}% (cat={cat}, n={cat_stats.get('total', 0)}, prior=({prior_a:.1f},{prior_b:.1f}))")
+            pfk = bayes_prob if r["side"] == "YES" else 100 - bayes_prob
+            # ── Upgrade 3: Category-Specific Kelly Cap ──
+            cat_kelly_cap = get_category_kelly_cap(cat, CFG.get("category_kelly_caps"))
+            effective_kelly = min(active_kelly, cat_kelly_cap)
+            # ── Upgrade 2: Debate-Spread-Adaptive Kelly Multiplier ──
+            ds_mult = debate_spread_kelly_mult(r.get("debate_spread", 0))
+            effective_kelly *= ds_mult
+            if ds_mult < 1.0:
+                log.info(f"  Debate spread {r.get('debate_spread', 0)}% -> Kelly mult {ds_mult:.2f}")
+            # ── Upgrade 5: Simultaneous Bet Reduction (Thorp) ──
+            n_concurrent = len(existing)
+            if n_concurrent > 1:
+                effective_kelly = thorp_concurrent_reduction(effective_kelly, n_concurrent)
+                log.info(f"  Thorp reduction: {n_concurrent} concurrent bets -> Kelly={effective_kelly:.3f}")
+            contracts, cost = kelly(pfk, bp, combined_bal, active_max_bet, trade_fee, effective_kelly)
             if contracts == 0: log.info("  -> Kelly: no bet (EV negative after fees)"); continue
+
+            # ── Upgrade 6: 2x Kelly Safety Ceiling ──
+            # Absolute cap: never risk more than 2x the raw Kelly bet
+            raw_kelly_bet = active_kelly * combined_bal
+            max_allowed_cost = 2.0 * raw_kelly_bet
+            if cost > max_allowed_cost and max_allowed_cost > 0:
+                capped_contracts = max(1, int(max_allowed_cost / (bp / 100 + trade_fee)))
+                log.info(f"  2x Kelly ceiling: {contracts}x -> {capped_contracts}x (cost ${cost:.2f} > 2*Kelly ${max_allowed_cost:.2f})")
+                contracts = capped_contracts
+                cost = round(contracts * bp / 100, 2)
+
+            # ── Upgrade 4: Dynamic Fee-Drag Minimum Edge ──
+            dyn_min = dynamic_min_edge(bp, trade_fee)
+            if abs(r["edge"]) < dyn_min:
+                log.info(f"  -> SKIP: edge {r['edge']:.1f}% < dynamic min {dyn_min:.1f}% (fee-drag at {bp}c)")
+                continue
 
             # Slippage check
             if ob and contracts > 1:

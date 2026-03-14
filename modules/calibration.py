@@ -165,6 +165,41 @@ class CalibrationTracker:
             "category_stats": self.category_stats(),
         }
 
+    def adaptive_prior(self, category="other", base_alpha=2, base_beta=2):
+        """Upgrade 8: Realized-Edge Recalibration Loop.
+
+        Adjust Bayesian priors based on realized calibration performance.
+        Good Brier score (< 0.15) → tighten priors (trust our model more)
+        Bad Brier score (> 0.25) → widen priors (shrink toward 50% more)
+
+        Returns (alpha, beta) tuple for the Beta-Binomial prior.
+        """
+        resolved = self._get_resolved(category)
+        n = len(resolved)
+        if n < 5:
+            # Not enough data to adjust, use base priors
+            return base_alpha, base_beta
+
+        brier = self.brier_score(category)
+
+        # Scale priors based on calibration quality
+        # Good calibration (brier < 0.15): reduce prior strength → less shrinkage
+        # Bad calibration (brier > 0.25): increase prior strength → more shrinkage
+        if brier < 0.10:
+            scale = 0.5   # Very well calibrated: halve prior weight
+        elif brier < 0.15:
+            scale = 0.75  # Good: reduce prior modestly
+        elif brier < 0.20:
+            scale = 1.0   # Decent: keep default
+        elif brier < 0.25:
+            scale = 1.5   # Mediocre: increase prior
+        elif brier < 0.30:
+            scale = 2.0   # Bad: double the prior (heavy shrinkage)
+        else:
+            scale = 3.0   # Very bad: triple prior (extreme shrinkage)
+
+        return base_alpha * scale, base_beta * scale
+
     def _get_resolved(self, category=None, last_n=None) -> list:
         resolved = [r for r in self.records if r["resolved"] is not None]
         if category:
