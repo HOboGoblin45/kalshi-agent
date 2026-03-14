@@ -64,7 +64,9 @@ async function ensureBackendRunning() {
   const logPath = path.join(cwd, 'electron-backend.log');
   const logFd = fs.openSync(logPath, 'w');
 
-  const args = ['kalshi-agent.py', '--config', cfg, '--live'];
+  // SAFETY: Desktop app ALWAYS starts in dry-run mode.
+  // Live trading requires explicit --live flag from command line, never from Electron.
+  const args = ['kalshi-agent.py', '--config', cfg, '--dry-run'];
   backendProc = spawn('python', args, {
     cwd,
     windowsHide: true,

@@ -82,6 +82,23 @@ class KalshiAPI:
             if not cur: break
         return out
 
+    def events(self, limit=100):
+        """Fetch open events (non-parlay single-outcome markets live here)."""
+        out, cur = [], None
+        for _ in range(5):
+            q = f"/events?limit={min(limit, 200)}&status=open" + (f"&cursor={cur}" if cur else "")
+            d = self._req("GET", q); out.extend(d.get("events", [])); cur = d.get("cursor")
+            if not cur or len(out) >= limit: break
+        return out
+
+    def event_markets(self, event_ticker):
+        """Fetch all markets for a specific event."""
+        try:
+            d = self._req("GET", f"/markets?event_ticker={event_ticker}&limit=100&status=open")
+            return d.get("markets", [])
+        except Exception:
+            return []
+
     def orderbook(self, t): return self._req("GET", f"/markets/{t}/orderbook")
 
     def positions(self):
@@ -131,15 +148,63 @@ class MarketCache:
         self.ttl = CFG["market_cache_minutes"] * 60
         self._refresh_failures = 0
 
+    def _fetch_event_markets(self):
+        """Fetch single-outcome markets from the events API.
+        The /markets endpoint is flooded with parlays, but /events has
+        real single-outcome markets (politics, weather, financials, etc.)."""
+        event_mkts = []
+        seen_tickers = set()
+        try:
+            events = self.api.events(limit=200)
+            log.info(f"Events API: {len(events)} events found")
+            for ev in events:
+                et = ev.get("event_ticker", "")
+                if not et:
+                    continue
+                # Skip parlay/multi-game event types
+                if any(skip in et.upper() for skip in ["KXMVE", "MULTIGAME", "CROSSCATEGORY"]):
+                    continue
+                try:
+                    mkts = self.api.event_markets(et)
+                    for m in mkts:
+                        tk = m.get("ticker", "")
+                        if tk and tk not in seen_tickers:
+                            seen_tickers.add(tk)
+                            m["_source"] = "event"
+                            m["_event_title"] = ev.get("title", "")
+                            m["_event_category"] = ev.get("category", "")
+                            event_mkts.append(m)
+                except Exception:
+                    continue
+            log.info(f"Events: fetched {len(event_mkts)} single-outcome markets from {len(events)} events")
+        except Exception as e:
+            log.warning(f"Events API fetch failed: {e}")
+        return event_mkts
+
     def get(self):
         now = time.time()
         if not self.markets or (now - self.last_refresh) > self.ttl:
             log.info("Loading markets (full refresh)...")
             try:
-                fresh = [_normalize_kalshi(m) for m in self.api.all_markets()]
-                self.markets = fresh; self.last_refresh = now
+                # Fetch both parlay markets and event-based single-outcome markets
+                parlay_mkts = [_normalize_kalshi(m) for m in self.api.all_markets()]
+                event_mkts = [_normalize_kalshi(m) for m in self._fetch_event_markets()]
+                # Merge, dedup by ticker, prioritize event markets
+                seen = set()
+                merged = []
+                for m in event_mkts:  # Event markets first (higher quality)
+                    tk = m.get("ticker", "")
+                    if tk and tk not in seen:
+                        seen.add(tk); merged.append(m)
+                for m in parlay_mkts:
+                    tk = m.get("ticker", "")
+                    if tk and tk not in seen:
+                        seen.add(tk); merged.append(m)
+                self.markets = merged; self.last_refresh = now
                 self._refresh_failures = 0
-                log.info(f"Cached {len(self.markets)} markets")
+                n_event = len(event_mkts)
+                n_parlay = len(merged) - n_event
+                log.info(f"Cached {len(self.markets)} markets ({n_event} event-based + {n_parlay} parlay)")
             except Exception as e:
                 self._refresh_failures += 1
                 log.error(f"Market refresh failed (attempt #{self._refresh_failures}): {e}")
@@ -301,17 +366,41 @@ class PolymarketAPI:
 def normalize_polymarket(pm):
     """Convert Polymarket Gamma API market dict to internal format."""
     tokens = pm.get("tokens", [])
-    yes_token, no_token, yes_price, no_price = "", "", 50, 50
+    yes_token, no_token, yes_price, no_price = "", "", 0, 0
+
+    # Try outcomePrices at market level first (more reliable than token-level prices)
+    outcome_prices = pm.get("outcomePrices", "")
+    if outcome_prices and isinstance(outcome_prices, str):
+        try:
+            prices = json.loads(outcome_prices)
+            if len(prices) >= 2:
+                yes_price = float(prices[0]) * 100
+                no_price = float(prices[1]) * 100
+        except (json.JSONDecodeError, ValueError, IndexError): pass
+
     for tok in tokens:
         outcome = (tok.get("outcome", "") or "").lower()
+        tok_price = float(tok.get("price", 0) or 0) * 100
         if outcome == "yes":
-            yes_token = tok.get("token_id", ""); yes_price = float(tok.get("price", 0.5)) * 100
+            yes_token = tok.get("token_id", "")
+            if tok_price > 0 and yes_price == 0: yes_price = tok_price
         elif outcome == "no":
-            no_token = tok.get("token_id", ""); no_price = float(tok.get("price", 0.5)) * 100
+            no_token = tok.get("token_id", "")
+            if tok_price > 0 and no_price == 0: no_price = tok_price
     if not yes_token and len(tokens) >= 1:
-        yes_token = tokens[0].get("token_id", ""); yes_price = float(tokens[0].get("price", 0.5)) * 100
+        yes_token = tokens[0].get("token_id", "")
     if not no_token and len(tokens) >= 2:
-        no_token = tokens[1].get("token_id", ""); no_price = float(tokens[1].get("price", 0.5)) * 100
+        no_token = tokens[1].get("token_id", "")
+
+    # Fallback: if still no prices, use bestBid/bestAsk fields or default to 50
+    if yes_price == 0:
+        best_bid = float(pm.get("bestBid", 0) or 0) * 100
+        best_ask = float(pm.get("bestAsk", 0) or 0) * 100
+        if best_bid > 0 and best_ask > 0: yes_price = (best_bid + best_ask) / 2
+        elif best_bid > 0: yes_price = best_bid
+        elif best_ask > 0: yes_price = best_ask
+        else: yes_price = 50
+    if no_price == 0: no_price = max(1, 100 - yes_price)
 
     end_date = pm.get("end_date_iso", pm.get("endDate", ""))
     hrs_left = 9999

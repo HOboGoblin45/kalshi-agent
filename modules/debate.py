@@ -58,7 +58,7 @@ class DebateEngine:
         for m in markets:
             if m["ticker"] in skip_tickers: continue
             t = m.get("title", ""); sub = m.get("subtitle", "")
-            yc = m.get("yes_bid", m.get("last_price", "?")); vol = m.get("volume", 0) or 0
+            yc = m.get("display_price", m.get("yes_bid", m.get("last_price", "?"))) or "?"; vol = m.get("volume", 0) or 0
             hrs = m.get("_hrs_left", "?"); cat = m.get("_category", "other")
             if isinstance(hrs, float): hrs = f"{hrs:.0f}"
             desc = t + (f" [{sub}]" if sub and sub != t else "")
@@ -75,11 +75,11 @@ LIVE DATA (pre-fetched from official sources -- use these as ground truth):
 
 IMPORTANT: Compare the live data above DIRECTLY to the market prices. If NWS says 62°F and a market asks "above 58°F?" priced at 50c, that's concrete evidence of a 10%+ edge. If FRED shows Fed Funds at 5.33% and a market implies otherwise, that's edge."""
 
-        prompt = f"""You are an aggressive prediction market trader. Find edge and exploit it. Markets are slow to react. Be bold. A 3-5%% edge IS worth trading.
+        prompt = f"""You are a disciplined prediction market trader. Find concrete edge using data and exploit mispricings. Focus on verifiable facts vs market prices.
 
 TODAY: {datetime.datetime.now().strftime("%A, %B %d, %Y %I:%M %p")}
 
-FIND EDGE BY: Searching for CURRENT data (NWS forecasts, prices, news, data releases) and comparing to market prices. Stale prices after news = free money. Near-expiry (<6h) markets with clear outcomes = goldmines. Cheap contracts (10-20c) where true prob is higher = asymmetric bets.
+FIND EDGE BY: Searching for CURRENT data (NWS forecasts, ESPN scores/odds, FRED economic data, news, data releases) and comparing to market prices. Stale prices after news/data releases = real edge. Near-expiry (<6h) markets with clear outcomes = best opportunities. Cheap contracts (10-20c) where true prob is higher = asymmetric bets. Account for ~$0.07/contract fees on BOTH sides.
 
 MARKETS:
 {mlist}
@@ -120,7 +120,7 @@ Return [] ONLY if no edge found after research."""
         return []
 
     def run_debate(self, market, orderbook_data=None, data_fetcher=None):
-        yc = market.get("yes_bid", market.get("last_price", 50)) or 50
+        yc = market.get("display_price", market.get("yes_bid", market.get("last_price", 50))) or 50
         hrs = market.get("_hrs_left", "?")
         title = market.get("title", market["ticker"])
         sub = market.get("subtitle", "")
@@ -146,6 +146,9 @@ Return [] ONLY if no edge found after research."""
             fred_data = data_fetcher.get_fred_for_category(cat)
             if fred_data:
                 live_data += f"\nFRED OFFICIAL DATA: {fred_data}"
+            sports_data = data_fetcher.get_sports_for_market(title)
+            if sports_data:
+                live_data += f"\nESPN LIVE SPORTS DATA:\n{sports_data}"
 
         live_section = ""
         if live_data:
@@ -177,6 +180,8 @@ FEES: ~$0.07/contract{live_section}"""
             "energy": "Search for current WTI crude price and latest OPEC decisions.",
             "policy": "Search for the latest news on this specific regulation/legislation. Find committee votes, statements, or rulings.",
             "markets": "Search for latest close or intraday movement of the relevant index.",
+            "sports": "Use the ESPN live data provided. Check team records, recent form, injuries, and betting lines. Compare spread/O-U to market price.",
+            "crypto": "Search for current price of the relevant cryptocurrency. Check recent trend and any major news/regulatory events.",
         }.get(cat, "Search for the most recent data relevant to this market.")
 
         bull_prompt = f"""You are a conviction-driven research analyst. Make the STRONGEST possible case that this market resolves YES. You are the BULL in a bull-vs-bear debate.
@@ -256,14 +261,14 @@ DEBATE METRICS:
 - Bull floor: {bull_floor}% | Bear ceiling: {bear_ceiling}%
 - Market price: {yc}c (implies {yc}%)
 
-DECISION FRAMEWORK (aggressive -- bias toward ACTION):
-1. EVIDENCE QUALITY: Which side has harder data? Go with the side that has concrete numbers.
-2. MARKET INEFFICIENCY BIAS: Markets are SLOW. If either side found fresh data the market hasn't priced in, TRADE.
-3. DISAGREE AND COMMIT: Even if bull and bear differ, if one side has clearly better evidence, GO WITH IT. Only say HOLD if you truly have zero edge.
-4. If bull floor > market price, STRONG YES. If bear ceiling < market price, STRONG NO. These are the easiest calls.
-5. TIME PRESSURE: Edge decays fast. If you see edge NOW, take it. Waiting means someone else captures it.
-6. SMALL EDGE IS STILL EDGE: A 3-5% edge on a reasonably priced contract is still profitable. Don't demand perfection.
-7. FORTUNE FAVORS THE BOLD: You miss 100% of the trades you don't take. When evidence leans one way, commit.
+DECISION FRAMEWORK (disciplined edge extraction):
+1. EVIDENCE QUALITY: Which side has harder data? Official sources (NWS, FRED, ESPN, BLS) > news articles > opinion. Go with concrete numbers.
+2. MARKET INEFFICIENCY: If either side found FRESH data (released in last 2-4 hours) the market hasn't priced in, that's real edge. Trade it.
+3. CALIBRATION CHECK: If bull and bear estimates are within 5% of each other, use their midpoint. If they disagree by >20%, the situation is uncertain -- require stronger evidence to trade.
+4. FLOOR/CEILING RULE: If bull floor > market price, STRONG YES. If bear ceiling < market price, STRONG NO. These are the clearest signals.
+5. FEE AWARENESS: After ~$0.07/contract fees on entry AND exit, you need ~5%+ edge to profit. Don't trade marginal edges.
+6. HOLD IS VALID: Saying HOLD protects capital for better opportunities. Only trade when evidence clearly supports a direction.
+7. ASYMMETRIC BETS: Cheap contracts (10-25c) with verified data supporting higher probability are the best risk/reward.
 
 RESPOND EXACTLY:
 PROBABILITY: [integer 1-99, your final evidence-weighted estimate]

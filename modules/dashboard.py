@@ -153,9 +153,11 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
     def _state(self):
         risk = SHARED.get("_risk_summary", {"total": 0, "wins": 0, "losses": 0, "win_rate": "--",
             "wagered": "$0", "day_trades": 0, "day_pnl": "$0", "exposure": "$0", "paused": False})
+        # SAFETY: always re-check CFG for canonical dry_run state
+        is_dry_run = CFG.get("dry_run", True)
         return {"enabled": SHARED["enabled"], "status": SHARED["status"], "balance": SHARED["balance"],
             "poly_balance": SHARED.get("poly_balance", 0), "poly_enabled": SHARED.get("poly_enabled", False),
-            "dry_run": SHARED.get("dry_run", CFG.get("dry_run", True)),
+            "dry_run": is_dry_run,
             "environment": CFG["environment"].upper(), "risk": risk, "trades": SHARED.get("_trades", [])[-20:],
             "log": SHARED["log_lines"][-100:], "last_scan": SHARED["last_scan"], "next_scan": SHARED["next_scan"],
             "max_daily": CFG["max_daily_trades"], "scan_count": SHARED["scan_count"],

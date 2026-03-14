@@ -22,7 +22,7 @@ Key innovations over v5:
 import os, sys, json, time, datetime, argparse, traceback, threading
 
 # ── Module imports ──
-from modules.config import CFG, SHARED, SHARED_LOCK, log, parse_orderbook_price
+from modules.config import CFG, SHARED, SHARED_LOCK, log, parse_orderbook_price, load_config
 from modules.apis import KalshiAPI, MarketCache, PolymarketAPI, PolymarketCache
 from modules.data_fetcher import DataFetcher
 from modules.notifier import Notifier, PerformanceReporter
@@ -762,44 +762,24 @@ class Agent:
 
 def main():
     ap = argparse.ArgumentParser(description="Kalshi AI Agent v6 -- Cross-Platform Arbitrage")
-    ap.add_argument("--config", type=str)
+    ap.add_argument("--config", type=str, help="Path to config JSON file")
     ap.add_argument("--scan-once", action="store_true"); ap.add_argument("--no-dashboard", action="store_true")
     ap.add_argument("--report", action="store_true", help="Generate performance report and exit")
     mode = ap.add_mutually_exclusive_group()
-    mode.add_argument("--dry-run", action="store_true", help="Never place live orders")
-    mode.add_argument("--live", action="store_true", help="Allow live order placement")
+    mode.add_argument("--dry-run", action="store_true", help="Force dry-run mode (default)")
+    mode.add_argument("--live", action="store_true", help="Enable live order placement (requires explicit intent)")
     args = ap.parse_args()
-    if args.config:
-        with open(args.config) as f: CFG.update(json.load(f))
-    env_overrides = {
-        "KALSHI_API_KEY_ID": "kalshi_api_key_id",
-        "ANTHROPIC_API_KEY": "anthropic_api_key",
-        "FRED_API_KEY": "fred_api_key",
-        "KALSHI_EMAIL_PASSWORD": "email_password",
-        "POLYMARKET_PRIVATE_KEY": "polymarket_private_key",
-        "POLYMARKET_API_KEY": "polymarket_api_key",
-        "POLYMARKET_API_SECRET": "polymarket_api_secret",
-        "POLYMARKET_API_PASSPHRASE": "polymarket_api_passphrase",
-        "POLYMARKET_FUNDER": "polymarket_funder",
-    }
-    for env_var, cfg_key in env_overrides.items():
-        val = os.environ.get(env_var)
-        if val: CFG[cfg_key] = val
-    if args.dry_run:
-        CFG["dry_run"] = True
-    elif args.live:
-        CFG["dry_run"] = False
-    else:
-        CFG["dry_run"] = bool(CFG.get("dry_run", True))
-    with SHARED_LOCK:
-        SHARED["dry_run"] = CFG["dry_run"]
-    log.info(f"Trading mode: {'DRY-RUN' if CFG['dry_run'] else 'LIVE'}")
-    if not CFG["kalshi_api_key_id"] or not CFG["anthropic_api_key"]:
-        print("\n  Error: --config with API keys required (or set KALSHI_API_KEY_ID / ANTHROPIC_API_KEY env vars)\n"); sys.exit(1)
+
+    # Use centralized config loader with safe defaults
+    # dry_run from config file is IGNORED -- only --live flag can enable live trading
+    live_mode = args.live and not args.dry_run
+    load_config(config_path=args.config, live_mode=live_mode)
+
     # Auto-enable Polymarket if keys are provided
     if CFG.get("polymarket_private_key") and not CFG.get("polymarket_enabled"):
         CFG["polymarket_enabled"] = True
         log.info("Polymarket auto-enabled (private key detected)")
+
     a = Agent()
     try:
         if args.report:
