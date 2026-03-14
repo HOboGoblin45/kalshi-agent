@@ -52,6 +52,12 @@ DEFAULTS = {
     "cross_arb_min_profit_cents": 2,
     "cross_arb_max_cost": 10.00,
     "cross_arb_match_threshold": 0.70,
+    # Parallel execution for arbitrage legs (default: sequential for safety)
+    "arb_parallel_execution": False,
+    # Opportunity rotation: minimum improvement in cents to justify exiting current arb
+    "arb_rotation_min_improvement_cents": 3.0,
+    # Rotation: maximum number of rotations per scan cycle
+    "arb_max_rotations_per_scan": 1,
     # Quick-flip scalping -- disabled by default (structurally risky strategy)
     "quickflip_enabled": False,
     "quickflip_max_bet": 1.00,
