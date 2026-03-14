@@ -2,6 +2,7 @@
 import os, json, datetime, time, uuid
 
 from modules.config import CFG, SHARED, SHARED_LOCK, log, parse_orderbook_price
+from modules.precision import to_decimal, get_venue_fees, MONEY_PLACES
 
 
 class RiskMgr:
@@ -188,10 +189,10 @@ class ExitManager:
             except Exception:
                 continue
 
-            # Fee-aware PnL: account for taker fees on both entry and exit
-            fee_per_contract = CFG.get("taker_fee_per_contract", 0.07)
-            total_fees_cents = fee_per_contract * 100 * 2  # entry + exit fee in cents
-            pnl_pct = ((current - entry_price - total_fees_cents) / entry_price * 100) if entry_price > 0 else 0
+            # Fee-aware PnL using venue fee model
+            fees = get_venue_fees("kalshi")
+            fee_cents = float(fees.round_trip_cost(1)) * 100  # total fees for 1 contract in cents
+            pnl_pct = ((current - entry_price - fee_cents) / entry_price * 100) if entry_price > 0 else 0
             hours_held = 0
             try:
                 entry_time = datetime.datetime.fromisoformat(original["time"])
@@ -207,7 +208,7 @@ class ExitManager:
                 reason = f"Time exit ({hours_held:.0f}h held)"
             if not reason: continue
 
-            pnl_dollars = contracts * (current - entry_price) / 100 - contracts * fee_per_contract * 2
+            pnl_dollars = float(fees.net_pnl(entry_price, current, contracts))
             log.info(f"  EXIT: {tk} -- {reason} | entry:{entry_price}c now:{current:.0f}c P&L:${pnl_dollars:.2f}")
 
             try:
@@ -278,9 +279,9 @@ class ExitManager:
                 if current is None: continue
             except Exception: continue
 
-            poly_fee = CFG.get("polymarket_fee_per_contract", 0.02)
-            poly_fees_cents = poly_fee * 100 * 2
-            pnl_pct = ((current - entry_price - poly_fees_cents) / entry_price * 100) if entry_price > 0 else 0
+            poly_fees = get_venue_fees("polymarket")
+            poly_fee_cents = float(poly_fees.round_trip_cost(1)) * 100
+            pnl_pct = ((current - entry_price - poly_fee_cents) / entry_price * 100) if entry_price > 0 else 0
             reason = None
             if pnl_pct <= -self.loss_pct:
                 reason = f"Stop loss ({pnl_pct:.0f}% loss)"
@@ -291,7 +292,7 @@ class ExitManager:
             if not reason: continue
 
             contracts = int(size)
-            pnl_dollars = contracts * (current - entry_price) / 100 - contracts * poly_fee * 2
+            pnl_dollars = float(poly_fees.net_pnl(entry_price, current, contracts))
             log.info(f"  POLY EXIT: {token_id[:16]}... -- {reason} | entry:{entry_price}c now:{current}c P&L:${pnl_dollars:.2f}")
 
             try:

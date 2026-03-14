@@ -339,7 +339,9 @@ CONTRACTS: [integer 1-20]"""
 
         price_for_side = r["price_cents"] if r["price_cents"] > 0 else (market_cents if r["side"] == "YES" else 100 - market_cents)
         if price_for_side > 0:
-            fee_drag_pct = (CFG["taker_fee_per_contract"] / (price_for_side / 100)) * 100
+            # Fee drag: round-trip taker fees as % of contract cost
+            fee_per = CFG.get("taker_fee_per_contract", 0.07)
+            fee_drag_pct = (fee_per * 2) / (price_for_side / 100) * 100  # both entry + exit fees
             if abs(r["edge"]) < fee_drag_pct:
                 log.info(f"    [GATE] Edge {r['edge']}% < fee drag {fee_drag_pct:.1f}% -> HOLD")
                 r["side"] = "HOLD"

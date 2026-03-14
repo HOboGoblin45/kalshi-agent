@@ -114,7 +114,12 @@ class KalshiAPI:
 
 
 def _normalize_kalshi(m):
-    """Convert Kalshi API dollar-string fields to cent integers for backward compat."""
+    """Convert Kalshi API dollar-string fields to cent integers for backward compat.
+
+    Note: Kalshi uses whole-cent ticks, so int rounding is lossless here.
+    The raw dollar strings (e.g. '0.6700') are preserved in the original fields
+    for any code that needs full precision.
+    """
     def _to_cents(key):
         try:
             v = float(m.get(key, 0) or 0)

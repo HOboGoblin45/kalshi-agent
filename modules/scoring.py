@@ -1,22 +1,58 @@
 """Market scoring, filtering, and Kelly criterion position sizing."""
 import datetime
+from decimal import Decimal, ROUND_DOWN
 
 from modules.config import CFG, log
+from modules.precision import to_decimal, MONEY_PLACES
 
 
 def kelly(prob_pct, price_cents, bankroll, max_bet, fee, fraction=0.20):
-    p = prob_pct / 100.0; price = price_cents / 100.0
-    win_payoff = (1.0 - price) - fee; lose_cost = price + fee
-    if win_payoff <= 0: return 0, 0
+    """Kelly criterion position sizing with fee-aware EV.
+
+    All internal math uses Decimal to avoid float rounding errors.
+    Returns (contracts: int, cost: float) for backward compat.
+    """
+    p = to_decimal(prob_pct) / 100
+    price = to_decimal(price_cents) / 100  # dollars per contract
+    fee_d = to_decimal(fee)
+    bankroll_d = to_decimal(bankroll)
+    max_bet_d = to_decimal(max_bet)
+    frac = to_decimal(fraction)
+
+    # Win payoff: $1 - price - 2x fee (entry + exit taker fee)
+    win_payoff = Decimal("1") - price - fee_d * 2
+    # Lose cost: price + entry fee (no exit fee needed -- contract expires worthless)
+    lose_cost = price + fee_d
+
+    if win_payoff <= 0:
+        return 0, 0.0
+
     ev = p * win_payoff - (1 - p) * lose_cost
-    if ev <= 0: return 0, 0
-    b = win_payoff / lose_cost; q = 1 - p
-    kf = max(0, ((b * p - q) / b) * fraction) if b > 0 else 0
-    bet = min(kf * bankroll, max_bet)
-    total_per = price + fee
-    contracts = max(1, int(bet / total_per)) if bet >= total_per else 0
-    while contracts > 0 and contracts * total_per > max_bet: contracts -= 1
-    return contracts, round(contracts * price, 2)
+    if ev <= 0:
+        return 0, 0.0
+
+    # Kelly fraction: f* = (bp - q) / b
+    b = win_payoff / lose_cost
+    q = 1 - p
+    if b <= 0:
+        return 0, 0.0
+    kf = max(Decimal("0"), ((b * p - q) / b) * frac)
+
+    bet = min(kf * bankroll_d, max_bet_d)
+    total_per = price + fee_d  # cost per contract to enter
+    if total_per <= 0 or bet < total_per:
+        return 0, 0.0
+
+    contracts = int((bet / total_per).to_integral_value(rounding=ROUND_DOWN))
+    contracts = max(1, contracts)
+    # Ensure we don't exceed max bet
+    while contracts > 0 and contracts * total_per > max_bet_d:
+        contracts -= 1
+    if contracts <= 0:
+        return 0, 0.0
+
+    cost = float((contracts * price).quantize(MONEY_PLACES))
+    return contracts, cost
 
 
 def calc_hours_left(m):
