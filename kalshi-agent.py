@@ -890,6 +890,15 @@ class Agent:
             if kalshi_bal is not None: SHARED["balance"] = kalshi_bal
             if poly_bal is not None: SHARED["poly_balance"] = poly_bal
             SHARED["_scan_progress"] = {"phase": "idle", "step": "", "pct": 100, "total_phases": 0, "current_phase": 0}
+            SHARED["_open_arb_positions"] = len(ARB_TRACKER.get_open_positions())
+            SHARED["_arb_tracker_summary"] = {
+                "open": len(ARB_TRACKER.get_open_positions()),
+                "positions": [
+                    {"ticker": p["kalshi_ticker"], "profit": p["entry_profit_cents"],
+                     "age_min": round((time.time() - p["entry_time"]) / 60, 1)}
+                    for p in ARB_TRACKER.get_open_positions()
+                ],
+            }
         s = self.risk.summary()
         combined = (kalshi_bal or 0) + (poly_bal or 0)
         log.info(f"\nScan done. {s['day_trades']} trades, exposure {s['exposure']}, combined balance ${combined:.2f}")
