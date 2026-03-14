@@ -954,6 +954,8 @@ class Agent:
                     for p in ARB_TRACKER.get_open_positions()
                 ],
             }
+            if hasattr(self, 'market_maker'):
+                SHARED["_mm_summary"] = self.market_maker.summary()
         s = self.risk.summary()
         combined = (kalshi_bal or 0) + (poly_bal or 0)
         log.info(f"\nScan done. {s['day_trades']} trades, exposure {s['exposure']}, combined balance ${combined:.2f}")
