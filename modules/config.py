@@ -109,6 +109,19 @@ DEFAULTS = {
     "exit_loss_pct": 25,
     "exit_profit_pct": 40,
     "exit_time_hours": 36,
+    # ── Market Making ──
+    "mm_enabled": False,  # Must explicitly enable
+    "mm_default_spread_cents": 4,
+    "mm_default_quote_size": 5,
+    "mm_max_inventory_per_market": 20,
+    "mm_inventory_skew_cents": 1,
+    "mm_max_markets_per_event": 5,
+    "mm_min_volume": 0,
+    "mm_max_total_exposure_cents": 20000,  # $200 max total MM exposure
+    # ── Crypto Market Discovery ──
+    "crypto_mm_enabled": False,
+    "crypto_series": ["KXBTC", "KXBTCD", "KXETH"],
+    "btc_volatility_pct": 0.7,  # hourly vol estimate for fair value calc
     # Weekly performance report
     "report_day": "sunday",
     "report_hour": 20,
