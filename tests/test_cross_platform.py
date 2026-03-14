@@ -424,5 +424,115 @@ class TestOrderbookDictFormat(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestArbPositionTracker(unittest.TestCase):
+    def setUp(self):
+        from modules.arbitrage import ArbPositionTracker
+        self.tracker = ArbPositionTracker()
+
+    def test_record_and_retrieve(self):
+        self.tracker.record_entry("TEST-1", "KTEST", "poly-token", "YES@Kalshi + NO@Poly",
+                                  40, 55, 5, 5.0)
+        positions = self.tracker.get_open_positions()
+        self.assertEqual(len(positions), 1)
+        self.assertEqual(positions[0]["kalshi_ticker"], "KTEST")
+        self.assertEqual(positions[0]["contracts"], 5)
+
+    def test_exit_position(self):
+        self.tracker.record_entry("TEST-1", "KTEST", "poly-token", "YES@Kalshi", 40, 55, 5, 5.0)
+        self.tracker.record_exit("TEST-1", reason="rotation")
+        self.assertFalse(self.tracker.has_open_positions())
+
+    def test_multiple_positions(self):
+        self.tracker.record_entry("A", "KA", "pa", "s", 40, 55, 5, 5.0)
+        self.tracker.record_entry("B", "KB", "pb", "s", 30, 65, 3, 3.0)
+        self.assertEqual(len(self.tracker.get_open_positions()), 2)
+        self.tracker.record_exit("A")
+        self.assertEqual(len(self.tracker.get_open_positions()), 1)
+
+    def test_clear_closed(self):
+        self.tracker.record_entry("OLD", "KOLD", "p", "s", 40, 55, 1, 1.0, entry_time=1.0)
+        self.tracker.record_exit("OLD")
+        self.tracker._positions["OLD"]["exit_time"] = 1.0  # Very old
+        self.tracker.clear_closed(max_age_hours=1)
+        self.assertEqual(len(self.tracker._positions), 0)
+
+
+class TestShouldRotateArb(unittest.TestCase):
+    def test_no_rotation_when_no_positions(self):
+        from modules.arbitrage import should_rotate_arb
+        result = should_rotate_arb([], [{"profit_cents": 10}])
+        self.assertEqual(result, [])
+
+    def test_no_rotation_when_no_opportunities(self):
+        import time
+        from modules.arbitrage import should_rotate_arb
+        result = should_rotate_arb([{"entry_profit_cents": 5, "entry_time": time.time()}], [])
+        self.assertEqual(result, [])
+
+    def test_rotation_when_much_better_opportunity(self):
+        import time
+        from modules.arbitrage import should_rotate_arb
+        current = [{
+            "kalshi_ticker": "KOLD", "entry_profit_cents": 3.0,
+            "entry_time": time.time() - 300,
+        }]
+        new_opps = [{
+            "kalshi_ticker": "KNEW", "profit_cents": 40.0,
+            "title": "New Opp",
+        }]
+        # total_rotation_cost = (0.07 + 0.02) * 100 * 2 = 18c
+        # net = 40 - 3 - 18 = 19c > 3c threshold
+        result = should_rotate_arb(current, new_opps, min_improvement_cents=3.0)
+        self.assertEqual(len(result), 1)
+        self.assertGreater(result[0]["net_improvement"], 0)
+
+    def test_no_rotation_when_marginal_improvement(self):
+        import time
+        from modules.arbitrage import should_rotate_arb
+        current = [{
+            "kalshi_ticker": "KOLD", "entry_profit_cents": 8.0,
+            "entry_time": time.time(),
+        }]
+        new_opps = [{
+            "kalshi_ticker": "KNEW", "profit_cents": 9.0,  # Only 1c better, not enough after fees
+        }]
+        result = should_rotate_arb(current, new_opps, min_improvement_cents=3.0)
+        self.assertEqual(len(result), 0)
+
+    def test_skip_same_market(self):
+        import time
+        from modules.arbitrage import should_rotate_arb
+        current = [{"kalshi_ticker": "KSAME", "entry_profit_cents": 3.0, "entry_time": time.time()}]
+        new_opps = [{"kalshi_ticker": "KSAME", "profit_cents": 50.0}]
+        result = should_rotate_arb(current, new_opps)
+        self.assertEqual(len(result), 0)
+
+
+class TestParallelExecution(unittest.TestCase):
+    def test_parallel_flag_in_dry_run(self):
+        from modules.arbitrage import execute_cross_arb
+        opp = {
+            "arb_class": "locked", "kalshi_ticker": "KTEST", "poly_token": "ptest",
+            "poly_no_token": "ptest_no", "strategy": 1, "cost_cents": 90,
+            "profit_cents": 10, "k_price": 40, "p_price": 50,
+            "strategy_desc": "YES@Kalshi + NO@Polymarket",
+        }
+        result = execute_cross_arb(None, None, opp, dry_run=True, parallel=True)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["execution_mode"], "parallel")
+
+    def test_sequential_flag_in_dry_run(self):
+        from modules.arbitrage import execute_cross_arb
+        opp = {
+            "arb_class": "locked", "kalshi_ticker": "KTEST", "poly_token": "ptest",
+            "poly_no_token": "ptest_no", "strategy": 1, "cost_cents": 90,
+            "profit_cents": 10, "k_price": 40, "p_price": 50,
+            "strategy_desc": "YES@Kalshi + NO@Polymarket",
+        }
+        result = execute_cross_arb(None, None, opp, dry_run=True, parallel=False)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["execution_mode"], "sequential")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,8 +1,130 @@
 """Cross-platform matching, arbitrage scanning, routing, and within-market arbitrage."""
 import os, json, time, datetime
+import threading
 
 from modules.config import CFG, log, parse_orderbook_price
 from modules.market_state import MARKET_STATE
+
+
+class ArbPositionTracker:
+    """Track open cross-platform arbitrage positions for rotation decisions.
+
+    An arb position consists of two legs (one on Kalshi, one on Polymarket)
+    that together guarantee a payout. We track these so the rotation engine
+    can compare the current position's remaining profit against new opportunities.
+    """
+
+    def __init__(self):
+        self._positions = {}  # key -> ArbPosition dict
+        self._lock = threading.Lock()
+
+    def record_entry(self, key, kalshi_ticker, poly_token, strategy_desc,
+                     k_price, p_price, contracts, profit_cents, entry_time=None):
+        """Record a new arb position after both legs fill."""
+        with self._lock:
+            self._positions[key] = {
+                "kalshi_ticker": kalshi_ticker,
+                "poly_token": poly_token,
+                "strategy_desc": strategy_desc,
+                "k_entry_price": k_price,
+                "p_entry_price": p_price,
+                "contracts": contracts,
+                "entry_profit_cents": profit_cents,
+                "entry_time": entry_time or time.time(),
+                "status": "open",
+            }
+
+    def record_exit(self, key, reason="manual"):
+        """Mark a position as closed."""
+        with self._lock:
+            if key in self._positions:
+                self._positions[key]["status"] = "closed"
+                self._positions[key]["exit_time"] = time.time()
+                self._positions[key]["exit_reason"] = reason
+
+    def get_open_positions(self):
+        """Return list of open arb positions."""
+        with self._lock:
+            return [dict(pos, key=k) for k, pos in self._positions.items()
+                    if pos["status"] == "open"]
+
+    def get_position(self, key):
+        """Get a specific position by key."""
+        with self._lock:
+            return self._positions.get(key)
+
+    def has_open_positions(self):
+        with self._lock:
+            return any(p["status"] == "open" for p in self._positions.values())
+
+    def clear_closed(self, max_age_hours=24):
+        """Remove closed positions older than max_age_hours."""
+        cutoff = time.time() - max_age_hours * 3600
+        with self._lock:
+            self._positions = {
+                k: v for k, v in self._positions.items()
+                if v["status"] == "open" or v.get("exit_time", time.time()) > cutoff
+            }
+
+
+# Module-level singleton
+ARB_TRACKER = ArbPositionTracker()
+
+
+def should_rotate_arb(current_positions, new_opportunities,
+                      kalshi_fee=0.07, poly_fee=0.02, min_improvement_cents=3.0):
+    """Determine if we should exit a current arb position to enter a better one.
+
+    Rotation is only worthwhile if the new opportunity's profit exceeds:
+    1. The current position's remaining profit (which may have changed since entry)
+    2. PLUS the round-trip exit cost (selling both legs of current + buying both legs of new)
+
+    Args:
+        current_positions: list of open ArbPosition dicts from ARB_TRACKER
+        new_opportunities: list of arb opportunity dicts from scan_cross_platform_arbitrage
+        kalshi_fee: Kalshi fee per contract in dollars
+        poly_fee: Polymarket fee per contract in dollars
+        min_improvement_cents: minimum net improvement to justify the churn
+
+    Returns:
+        list of rotation dicts with exit_position, enter_opportunity, net_improvement
+    """
+    if not current_positions or not new_opportunities:
+        return []
+
+    # Round-trip exit cost: sell both legs of current position
+    # = 2 legs x fee per leg (Kalshi exit fee + Polymarket exit fee)
+    exit_fee_cents = (kalshi_fee + poly_fee) * 100  # exit current position
+    entry_fee_cents = (kalshi_fee + poly_fee) * 100  # enter new position
+    total_rotation_cost = exit_fee_cents + entry_fee_cents
+
+    rotations = []
+
+    for pos in current_positions:
+        current_profit = pos.get("entry_profit_cents", 0)
+
+        for opp in new_opportunities:
+            new_profit = opp.get("profit_cents", 0)
+
+            # Skip if same market (can't rotate into what you already hold)
+            if opp.get("kalshi_ticker") == pos.get("kalshi_ticker"):
+                continue
+
+            net_improvement = new_profit - current_profit - total_rotation_cost
+
+            if net_improvement >= min_improvement_cents:
+                rotations.append({
+                    "exit_position": pos,
+                    "enter_opportunity": opp,
+                    "current_profit": current_profit,
+                    "new_profit": new_profit,
+                    "rotation_cost": total_rotation_cost,
+                    "net_improvement": round(net_improvement, 2),
+                })
+
+    # Sort by net improvement (best rotation first)
+    rotations.sort(key=lambda r: r["net_improvement"], reverse=True)
+    return rotations
 
 
 def _jaccard_similarity(s1, s2):
@@ -256,11 +378,16 @@ def scan_cross_platform_arbitrage(matches, kalshi_api, poly_api, fee_kalshi=0.07
     return opportunities
 
 
-def execute_cross_arb(kalshi_api, poly_api, opp, max_cost=10.0, dry_run=False):
+def execute_cross_arb(kalshi_api, poly_api, opp, max_cost=10.0, dry_run=False, parallel=False):
     """Execute both legs of a cross-platform arb.
 
     SAFETY: only executes "locked" arb classification by default.
     Soft/speculative opportunities are logged but not executed.
+
+    Args:
+        parallel: If True, execute both legs simultaneously using threads.
+                  Faster but riskier -- if one leg fails, the other may have filled.
+                  Default False (sequential: Kalshi first, wait, then Polymarket).
     """
     arb_class = opp.get("arb_class", "speculative")
     if arb_class not in ("locked",) and not dry_run:
@@ -269,30 +396,175 @@ def execute_cross_arb(kalshi_api, poly_api, opp, max_cost=10.0, dry_run=False):
 
     cost_per_pair = opp["cost_cents"] / 100.0
     contracts = min(int(max_cost / cost_per_pair) if cost_per_pair > 0 else 0, 20)
-    if contracts == 0: return {"success": False, "reason": "Zero contracts"}
+    if contracts == 0:
+        return {"success": False, "reason": "Zero contracts"}
     total_cost = round(contracts * cost_per_pair, 2)
     total_profit = round(contracts * opp["profit_cents"] / 100, 2)
-    if dry_run: return {"success": True, "dry_run": True, "contracts": contracts,
-        "total_cost": total_cost, "expected_profit": total_profit, "strategy": opp["strategy_desc"]}
-    try:
-        side1 = "yes" if opp["strategy"] == 1 else "no"
+
+    if dry_run:
+        return {"success": True, "dry_run": True, "contracts": contracts,
+            "total_cost": total_cost, "expected_profit": total_profit,
+            "strategy": opp["strategy_desc"], "execution_mode": "parallel" if parallel else "sequential"}
+
+    side1 = "yes" if opp["strategy"] == 1 else "no"
+    side2_token = opp.get("poly_no_token", opp["poly_token"]) if opp["strategy"] == 1 else opp["poly_token"]
+    side2 = "no" if opp["strategy"] == 1 else "yes"
+
+    def _leg1_kalshi():
         kalshi_api.place_order(opp["kalshi_ticker"], side1, contracts, opp["k_price"])
-        log.info(f"  ARB Leg 1 (Kalshi): {side1} {contracts}x @{opp['k_price']}c")
-    except Exception as e:
-        log.error(f"  ARB Leg 1 FAILED: {e}"); return {"success": False, "reason": f"Leg 1 failed: {e}"}
-    time.sleep(1)
-    try:
-        if opp["strategy"] == 1:
-            token = opp.get("poly_no_token", opp["poly_token"])
-            poly_api.place_order(token, "no", contracts, opp["p_price"])
+        return True
+
+    def _leg2_poly():
+        poly_api.place_order(side2_token, side2, contracts, opp["p_price"])
+        return True
+
+    if parallel:
+        # PARALLEL EXECUTION: both legs fire simultaneously
+        import concurrent.futures
+        log.info(f"  ARB: Parallel execution -- firing both legs simultaneously")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(_leg1_kalshi)
+            f2 = pool.submit(_leg2_poly)
+
+            leg1_ok, leg2_ok = False, False
+            leg1_err, leg2_err = None, None
+            try:
+                leg1_ok = f1.result(timeout=30)
+                log.info(f"  ARB Leg 1 (Kalshi): {side1} {contracts}x @{opp['k_price']}c OK")
+            except Exception as e:
+                leg1_err = e
+                log.error(f"  ARB Leg 1 (Kalshi) FAILED: {e}")
+            try:
+                leg2_ok = f2.result(timeout=30)
+                log.info(f"  ARB Leg 2 (Polymarket): {side2} {contracts}x @{opp['p_price']}c OK")
+            except Exception as e:
+                leg2_err = e
+                log.error(f"  ARB Leg 2 (Polymarket) FAILED: {e}")
+
+        if leg1_ok and leg2_ok:
+            ARB_TRACKER.record_entry(
+                key=opp["kalshi_ticker"],
+                kalshi_ticker=opp["kalshi_ticker"],
+                poly_token=side2_token,
+                strategy_desc=opp["strategy_desc"],
+                k_price=opp["k_price"], p_price=opp["p_price"],
+                contracts=contracts, profit_cents=opp["profit_cents"])
+            return {"success": True, "contracts": contracts, "total_cost": total_cost,
+                "expected_profit": total_profit, "strategy": opp["strategy_desc"],
+                "execution_mode": "parallel"}
+        elif leg1_ok and not leg2_ok:
+            return {"success": False, "reason": f"Leg 2 failed: {leg2_err}",
+                "leg1_filled": True, "naked_position": True, "execution_mode": "parallel"}
+        elif not leg1_ok and leg2_ok:
+            return {"success": False, "reason": f"Leg 1 failed: {leg1_err}",
+                "leg2_filled": True, "naked_position": True, "execution_mode": "parallel"}
         else:
-            poly_api.place_order(opp["poly_token"], "yes", contracts, opp["p_price"])
-        log.info(f"  ARB Leg 2 (Polymarket): {contracts}x @{opp['p_price']}c")
-    except Exception as e:
-        log.error(f"  ARB Leg 2 FAILED: {e} -- Leg 1 NAKED!!")
-        return {"success": False, "reason": f"Leg 2 failed: {e}", "leg1_filled": True, "naked_position": True}
-    return {"success": True, "contracts": contracts, "total_cost": total_cost,
-        "expected_profit": total_profit, "strategy": opp["strategy_desc"]}
+            return {"success": False, "reason": f"Both legs failed: L1={leg1_err}, L2={leg2_err}",
+                "execution_mode": "parallel"}
+
+    else:
+        # SEQUENTIAL EXECUTION (default): Kalshi first, wait, then Polymarket
+        try:
+            _leg1_kalshi()
+            log.info(f"  ARB Leg 1 (Kalshi): {side1} {contracts}x @{opp['k_price']}c")
+        except Exception as e:
+            log.error(f"  ARB Leg 1 FAILED: {e}")
+            return {"success": False, "reason": f"Leg 1 failed: {e}"}
+
+        time.sleep(1)
+
+        try:
+            _leg2_poly()
+            log.info(f"  ARB Leg 2 (Polymarket): {side2} {contracts}x @{opp['p_price']}c")
+        except Exception as e:
+            log.error(f"  ARB Leg 2 FAILED: {e} -- Leg 1 NAKED!!")
+            return {"success": False, "reason": f"Leg 2 failed: {e}",
+                "leg1_filled": True, "naked_position": True}
+
+        ARB_TRACKER.record_entry(
+            key=opp["kalshi_ticker"],
+            kalshi_ticker=opp["kalshi_ticker"],
+            poly_token=side2_token,
+            strategy_desc=opp["strategy_desc"],
+            k_price=opp["k_price"], p_price=opp["p_price"],
+            contracts=contracts, profit_cents=opp["profit_cents"])
+
+        return {"success": True, "contracts": contracts, "total_cost": total_cost,
+            "expected_profit": total_profit, "strategy": opp["strategy_desc"],
+            "execution_mode": "sequential"}
+
+
+def exit_cross_arb(kalshi_api, poly_api, position, dry_run=False, parallel=False):
+    """Exit an open cross-platform arb position by selling both legs.
+
+    Args:
+        position: dict from ARB_TRACKER.get_open_positions()
+        dry_run: if True, log but don't execute
+        parallel: if True, sell both legs simultaneously
+
+    Returns:
+        dict with success status
+    """
+    key = position.get("key", position.get("kalshi_ticker", "?"))
+    contracts = position.get("contracts", 0)
+    if contracts == 0:
+        return {"success": False, "reason": "Zero contracts to exit"}
+
+    k_ticker = position["kalshi_ticker"]
+    p_token = position["poly_token"]
+    strategy = position.get("strategy_desc", "")
+
+    # Determine which sides to sell (opposite of what we bought)
+    if "YES@Kalshi" in strategy or "YES on Kalshi" in strategy:
+        k_sell_side = "yes"
+    else:
+        k_sell_side = "no"
+
+    if "YES@Polymarket" in strategy or "YES on Polymarket" in strategy:
+        p_sell_side = "yes"
+    else:
+        p_sell_side = "no"
+
+    log.info(f"  ARB EXIT: {k_ticker} -- selling {contracts}x on both platforms")
+
+    if dry_run:
+        ARB_TRACKER.record_exit(key, reason="dry_run_exit")
+        return {"success": True, "dry_run": True, "contracts": contracts}
+
+    def _sell_kalshi():
+        sell_price = max(1, position.get("k_entry_price", 50) - 3)
+        kalshi_api.place_order(k_ticker, k_sell_side, contracts, sell_price)
+        return True
+
+    def _sell_poly():
+        sell_price = max(1, position.get("p_entry_price", 50) - 3)
+        poly_api.place_order(p_token, "no" if p_sell_side == "yes" else "yes", contracts, sell_price)
+        return True
+
+    if parallel:
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(_sell_kalshi)
+            f2 = pool.submit(_sell_poly)
+            try:
+                f1.result(timeout=30)
+                f2.result(timeout=30)
+                ARB_TRACKER.record_exit(key, reason="rotation")
+                return {"success": True, "contracts": contracts}
+            except Exception as e:
+                log.error(f"  ARB EXIT partially failed: {e}")
+                ARB_TRACKER.record_exit(key, reason=f"partial_exit: {e}")
+                return {"success": False, "reason": str(e)}
+    else:
+        try:
+            _sell_kalshi()
+            time.sleep(1)
+            _sell_poly()
+            ARB_TRACKER.record_exit(key, reason="rotation")
+            return {"success": True, "contracts": contracts}
+        except Exception as e:
+            log.error(f"  ARB EXIT failed: {e}")
+            return {"success": False, "reason": str(e)}
 
 
 def route_order(side, kalshi_price, poly_price, kalshi_fee=0.07, poly_fee=0.02):

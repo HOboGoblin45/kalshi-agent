@@ -82,6 +82,7 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
         if self.path == '/api/risk-stats': return self._json(self._risk_stats())
         if self.path == '/api/health': return self._json(self._health())
         if self.path == '/api/backtest': return self._json(self._backtest())
+        if self.path == '/api/mm': return self._json(SHARED.get("_mm_summary", {"active": False}))
 
         # Serve built React app from dist/
         if os.path.isdir(_DIST_DIR):

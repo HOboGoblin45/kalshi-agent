@@ -36,6 +36,7 @@ from modules.execution import build_execution_plan, should_quickflip, MakerOrder
 from modules.market_state import MARKET_STATE
 from modules.arbitrage import (
     match_markets, scan_cross_platform_arbitrage, execute_cross_arb,
+    exit_cross_arb, should_rotate_arb, ARB_TRACKER,
     scan_arbitrage, _best_ask, _estimate_slippage, route_order, get_best_price,
     find_quickflip_candidates, get_bankroll_tier, get_dynamic_kelly, BANKROLL_TIERS,
 )
@@ -75,6 +76,11 @@ class Agent:
         self.exit_mgr = ExitManager(self.api, self.risk, self.notifier, poly_api=self.poly_api)
         self.maker_mgr = MakerOrderManager(self.api)
         self.ws_feed = KalshiWSFeed()
+        # Market maker (zero AI cost revenue layer)
+        from modules.market_maker import MarketMaker
+        self.market_maker = MarketMaker(self.api)
+        if CFG.get("mm_enabled", False):
+            self.market_maker.start()
         self._ws_started = False
 
     @staticmethod
@@ -348,6 +354,56 @@ class Agent:
         self.data.fetch_all(market_categories=active_categories if active_categories else None)
 
         # ══════════════════════════════════════
+        # PHASE 0: CRYPTO MARKET MAKING (zero AI cost)
+        # ══════════════════════════════════════
+        if CFG.get("mm_enabled", False):
+            self._update_progress(0, "Market Making", "Scanning crypto brackets...", total_phases + 1)
+            try:
+                from modules.crypto_markets import CryptoMarketDiscovery, BTCPriceFeed
+
+                if not hasattr(self, '_crypto_discovery'):
+                    self._crypto_discovery = CryptoMarketDiscovery(self.api)
+                    self._btc_feed = BTCPriceFeed()
+
+                # Refresh BTC price
+                btc_price = self._btc_feed.fetch()
+                if btc_price:
+                    log.info(f"  BTC price: ${btc_price:,.2f}")
+
+                # Discover active events
+                events = self._crypto_discovery.scan_active_events()
+
+                for event in events:
+                    # Check for sum-to-100 arbitrage
+                    sum_arb = event.find_sum_arb()
+                    if sum_arb:
+                        log.info(f"  SUM ARB: {event.event_ticker} -- {sum_arb}")
+                        scan_events.append(f"SUM-ARB: {event.event_ticker}")
+
+                    # Quote active brackets
+                    candidates = event.active_brackets(
+                        min_volume=CFG.get("mm_min_volume", 0))
+                    top_n = CFG.get("mm_max_markets_per_event", 5)
+
+                    for bracket in candidates[:top_n]:
+                        fair_value = self._btc_feed.bracket_fair_value(
+                            bracket, btc_price)
+                        if 5 <= fair_value <= 95:
+                            self.market_maker.quote_market(
+                                bracket["ticker"],
+                                fair_value_cents=fair_value,
+                                event_ticker=event.event_ticker)
+
+                mm_summary = self.market_maker.summary()
+                scan_events.append(
+                    f"MM: {mm_summary['markets_quoted']} markets, "
+                    f"{mm_summary['active_quotes']} quotes, "
+                    f"fills={mm_summary['total_fills']}")
+
+            except Exception as e:
+                log.error(f"  Market making phase failed: {e}")
+
+        # ══════════════════════════════════════
         # PHASE 1: CROSS-PLATFORM ARBITRAGE
         # ══════════════════════════════════════
         if self.poly_enabled and poly_mkts and self.poly_api and CFG.get("cross_arb_enabled", True):
@@ -403,6 +459,61 @@ class Agent:
                                 log.error(f"  Cross-arb execution failed: {ex}")
                 else:
                     log.info("  No cross-platform arbitrage found")
+
+                # ── ROTATION CHECK ──
+                # If we have open arb positions, check if any new opportunity
+                # is profitable enough to justify exiting and rotating
+                open_arb_positions = ARB_TRACKER.get_open_positions()
+                if open_arb_positions and cross_arbs:
+                    use_parallel = CFG.get("arb_parallel_execution", False)
+                    min_improve = CFG.get("arb_rotation_min_improvement_cents", 3.0)
+                    rotations = should_rotate_arb(
+                        open_arb_positions, cross_arbs,
+                        kalshi_fee=CFG["taker_fee_per_contract"],
+                        poly_fee=CFG.get("polymarket_fee_per_contract", 0.02),
+                        min_improvement_cents=min_improve)
+
+                    for rot in rotations[:1]:  # Only rotate into the single best opportunity
+                        exit_pos = rot["exit_position"]
+                        enter_opp = rot["enter_opportunity"]
+                        log.info(f"  ROTATION: Exit {exit_pos['kalshi_ticker']} "
+                                 f"(profit {rot['current_profit']:.1f}c) -> "
+                                 f"Enter {enter_opp['kalshi_ticker']} "
+                                 f"(profit {rot['new_profit']:.1f}c) "
+                                 f"net improvement: +{rot['net_improvement']:.1f}c")
+                        scan_events.append(
+                            f"ROTATION: {exit_pos['kalshi_ticker']} -> {enter_opp['kalshi_ticker']} "
+                            f"(+{rot['net_improvement']:.1f}c improvement)")
+
+                        # Exit current position
+                        exit_result = exit_cross_arb(
+                            self.api, self.poly_api, exit_pos,
+                            dry_run=CFG.get("dry_run", True),
+                            parallel=use_parallel)
+
+                        if exit_result.get("success"):
+                            # Enter new position
+                            enter_result = execute_cross_arb(
+                                self.api, self.poly_api, enter_opp,
+                                max_cost=CFG.get("cross_arb_max_cost", 10.0),
+                                dry_run=CFG.get("dry_run", True),
+                                parallel=use_parallel)
+
+                            if enter_result.get("success"):
+                                log.info(f"  ROTATION COMPLETE: "
+                                         f"{enter_result['contracts']}x, "
+                                         f"expected profit ${enter_result['expected_profit']:.2f}")
+                                self.notifier.send(
+                                    f"ARB ROTATION: {enter_opp.get('title', '')[:40]}",
+                                    f"Exited: {exit_pos['kalshi_ticker']}\n"
+                                    f"Entered: {enter_opp['kalshi_ticker']}\n"
+                                    f"Net improvement: +{rot['net_improvement']:.1f}c\n"
+                                    f"Expected profit: ${enter_result['expected_profit']:.2f}")
+                            else:
+                                log.error(f"  ROTATION ENTRY FAILED: {enter_result.get('reason')}")
+                        else:
+                            log.error(f"  ROTATION EXIT FAILED: {exit_result.get('reason')}")
+
             except Exception as e:
                 log.error(f"Cross-platform arb phase failed: {e}")
 
@@ -834,6 +945,17 @@ class Agent:
             if kalshi_bal is not None: SHARED["balance"] = kalshi_bal
             if poly_bal is not None: SHARED["poly_balance"] = poly_bal
             SHARED["_scan_progress"] = {"phase": "idle", "step": "", "pct": 100, "total_phases": 0, "current_phase": 0}
+            SHARED["_open_arb_positions"] = len(ARB_TRACKER.get_open_positions())
+            SHARED["_arb_tracker_summary"] = {
+                "open": len(ARB_TRACKER.get_open_positions()),
+                "positions": [
+                    {"ticker": p["kalshi_ticker"], "profit": p["entry_profit_cents"],
+                     "age_min": round((time.time() - p["entry_time"]) / 60, 1)}
+                    for p in ARB_TRACKER.get_open_positions()
+                ],
+            }
+            if hasattr(self, 'market_maker'):
+                SHARED["_mm_summary"] = self.market_maker.summary()
         s = self.risk.summary()
         combined = (kalshi_bal or 0) + (poly_bal or 0)
         log.info(f"\nScan done. {s['day_trades']} trades, exposure {s['exposure']}, combined balance ${combined:.2f}")
@@ -890,6 +1012,8 @@ def main():
                     help="Input file for --forward-backtest (default: kalshi-resolved.json)")
     ap.add_argument("--forward-limit", type=int, default=0,
                     help="Max markets to test in forward backtest (0=all)")
+    ap.add_argument("--mm", action="store_true",
+                    help="Enable market making on crypto bracket markets (zero AI cost)")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Force dry-run mode (default)")
     mode.add_argument("--live", action="store_true", help="Enable live order placement (requires explicit intent)")
@@ -904,6 +1028,11 @@ def main():
     if CFG.get("polymarket_private_key") and not CFG.get("polymarket_enabled"):
         CFG["polymarket_enabled"] = True
         log.info("Polymarket auto-enabled (private key detected)")
+
+    # Enable market making via CLI flag
+    if args.mm:
+        CFG["mm_enabled"] = True
+        CFG["crypto_mm_enabled"] = True
 
     if args.backtest:
         from modules.backtester import run_backtest, analyze_calibration, format_report
@@ -1024,7 +1153,10 @@ def main():
                 except Exception: pass
         if args.scan_once: a.scan()
         else: a.run()
-    except KeyboardInterrupt: log.info("\nStopped.")
+    except KeyboardInterrupt:
+        log.info("\nStopped.")
+        if hasattr(a, 'market_maker') and a.market_maker.is_active():
+            a.market_maker.stop()
     except Exception as e: log.error(f"Fatal: {e}"); traceback.print_exc(); sys.exit(1)
 
 if __name__ == "__main__": main()
