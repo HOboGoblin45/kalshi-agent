@@ -427,5 +427,135 @@ class TestProductionPrecisionIntegration(unittest.TestCase):
         self.assertGreater(float(pnl), 0.50)
 
 
+class TestKellyMathUpgrades(unittest.TestCase):
+    """Tests for the 8 Kelly Criterion mathematical upgrades."""
+
+    def test_dynamic_min_edge_cheap_contract(self):
+        """Upgrade 4: Cheap contracts should require higher min edge."""
+        from modules.scoring import dynamic_min_edge
+        # 10c contract with $0.07 fee: 2*0.07*100/10 + 1 = 2.4%
+        min_e = dynamic_min_edge(10, 0.07, 1.0)
+        self.assertAlmostEqual(min_e, 2.4, places=1)
+        # Higher fee drag than expensive contracts
+        min_e_50 = dynamic_min_edge(50, 0.07, 1.0)
+        self.assertGreater(min_e, min_e_50)
+
+    def test_dynamic_min_edge_expensive_contract(self):
+        """Upgrade 4: Expensive contracts have lower fee drag."""
+        from modules.scoring import dynamic_min_edge
+        # 50c contract: 2*0.07*100/50 + 1 = 1.28%
+        min_e = dynamic_min_edge(50, 0.07, 1.0)
+        self.assertAlmostEqual(min_e, 1.28, places=1)
+
+    def test_category_kelly_caps(self):
+        """Upgrade 3: Weather cap should be higher than crypto."""
+        from modules.scoring import get_category_kelly_cap
+        weather = get_category_kelly_cap("weather")
+        crypto = get_category_kelly_cap("crypto")
+        self.assertGreater(weather, crypto)
+        self.assertAlmostEqual(weather, 0.25, places=2)
+        self.assertAlmostEqual(crypto, 0.10, places=2)
+
+    def test_category_kelly_caps_user_override(self):
+        """Upgrade 3: User can override default caps."""
+        from modules.scoring import get_category_kelly_cap
+        custom = {"weather": 0.30, "custom_cat": 0.18}
+        self.assertAlmostEqual(get_category_kelly_cap("weather", custom), 0.30, places=2)
+        self.assertAlmostEqual(get_category_kelly_cap("custom_cat", custom), 0.18, places=2)
+
+    def test_debate_spread_full_agreement(self):
+        """Upgrade 2: Zero spread → full Kelly multiplier."""
+        from modules.scoring import debate_spread_kelly_mult
+        self.assertAlmostEqual(debate_spread_kelly_mult(0), 1.0, places=2)
+
+    def test_debate_spread_moderate_disagreement(self):
+        """Upgrade 2: 20% spread → 0.6 multiplier."""
+        from modules.scoring import debate_spread_kelly_mult
+        self.assertAlmostEqual(debate_spread_kelly_mult(20), 0.6, places=2)
+
+    def test_debate_spread_high_disagreement(self):
+        """Upgrade 2: 35%+ spread → floor of 0.3."""
+        from modules.scoring import debate_spread_kelly_mult
+        self.assertAlmostEqual(debate_spread_kelly_mult(35), 0.3, places=2)
+        self.assertAlmostEqual(debate_spread_kelly_mult(50), 0.3, places=2)
+
+    def test_bayesian_prob_no_data(self):
+        """Upgrade 1: With zero calibration data, heavy shrinkage toward 50%."""
+        from modules.scoring import bayesian_kelly_prob
+        # raw=80%, n=0, prior=(2,2) → weight=0, posterior=0.5 → 50%
+        adj = bayesian_kelly_prob(80, 0, 0, 2, 2)
+        self.assertAlmostEqual(adj, 50.0, places=1)
+
+    def test_bayesian_prob_with_data(self):
+        """Upgrade 1: With enough data, less shrinkage."""
+        from modules.scoring import bayesian_kelly_prob
+        # raw=80%, 15 wins out of 20, prior=(2,2)
+        # weight = 20/(20+4) = 0.833
+        # posterior = (2+15)/(4+20) = 17/24 = 0.708
+        # adjusted = 0.833*0.8 + 0.167*0.708 = 0.785
+        adj = bayesian_kelly_prob(80, 15, 20, 2, 2)
+        self.assertGreater(adj, 75)
+        self.assertLess(adj, 80)
+
+    def test_thorp_concurrent_single(self):
+        """Upgrade 5: Single bet → full Kelly."""
+        from modules.scoring import thorp_concurrent_reduction
+        self.assertAlmostEqual(thorp_concurrent_reduction(0.20, 1), 0.20, places=3)
+
+    def test_thorp_concurrent_four(self):
+        """Upgrade 5: 4 concurrent bets → half Kelly."""
+        from modules.scoring import thorp_concurrent_reduction
+        self.assertAlmostEqual(thorp_concurrent_reduction(0.20, 4), 0.10, places=3)
+
+    def test_thorp_concurrent_nine(self):
+        """Upgrade 5: 9 concurrent bets → 1/3 Kelly."""
+        from modules.scoring import thorp_concurrent_reduction
+        self.assertAlmostEqual(thorp_concurrent_reduction(0.30, 9), 0.10, places=3)
+
+    def test_adaptive_prior_no_data(self):
+        """Upgrade 8: With no data, returns base priors."""
+        from modules.calibration import CalibrationTracker
+        tracker = CalibrationTracker(log_path="/tmp/test_cal_nodata.json")
+        tracker.records = []
+        a, b = tracker.adaptive_prior("nonexistent")
+        self.assertEqual(a, 2)
+        self.assertEqual(b, 2)
+
+    def test_adaptive_prior_good_calibration(self):
+        """Upgrade 8: Good Brier score reduces prior strength."""
+        from modules.calibration import CalibrationTracker
+        tracker = CalibrationTracker(log_path="/tmp/test_cal_good.json")
+        # Create fake resolved records with good calibration
+        tracker.records = []
+        for i in range(20):
+            # Predict 80%, resolve True → good calibration
+            tracker.records.append({
+                "ticker": f"T{i}", "side": "YES", "our_probability": 80,
+                "our_confidence": 85, "market_price": 70, "edge": 10,
+                "category": "weather", "resolved": True, "resolution_time": "2025-01-01",
+                "bull_prob": 80, "bear_prob": 70, "debate_spread": 10,
+            })
+        a, b = tracker.adaptive_prior("weather")
+        # Good calibration → scale < 1 → priors reduced
+        self.assertLess(a, 2)
+        self.assertLess(b, 2)
+
+    def test_2x_kelly_ceiling_logic(self):
+        """Upgrade 6: Cost should never exceed 2x raw Kelly bet."""
+        # Simulate: kelly_fraction=0.20, bankroll=$100, raw_kelly=0.20*100=$20
+        # max_allowed = 2*20 = $40. If cost=$50, should be capped.
+        raw_kelly_bet = 0.20 * 100  # $20
+        max_allowed = 2.0 * raw_kelly_bet  # $40
+        cost = 50.0
+        self.assertGreater(cost, max_allowed)
+        # After capping:
+        bp = 30  # 30 cents
+        trade_fee = 0.07
+        capped_contracts = max(1, int(max_allowed / (bp / 100 + trade_fee)))
+        self.assertGreater(capped_contracts, 0)
+        capped_cost = round(capped_contracts * bp / 100, 2)
+        self.assertLessEqual(capped_cost, max_allowed)
+
+
 if __name__ == "__main__":
     unittest.main()

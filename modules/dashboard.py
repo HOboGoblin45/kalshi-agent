@@ -77,6 +77,7 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
         if self.path == '/api/positions': return self._json(self._positions())
         if self.path == '/api/trades': return self._json(self._trades())
         if self.path == '/api/calibration': return self._json(self._calibration())
+        if self.path == '/api/risk-stats': return self._json(self._risk_stats())
 
         # Serve built React app from dist/
         if os.path.isdir(_DIST_DIR):
@@ -196,6 +197,75 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
         except Exception:
             return {"total_predictions": 0, "resolved": 0, "pending": 0,
                     "overall_brier": 0.25, "overall_log_loss": 1.0, "category_stats": {}}
+
+    def _risk_stats(self):
+        """Drawdown probability and risk metrics for the dashboard."""
+        import math
+        try:
+            with SHARED_LOCK:
+                trades = list(SHARED.get("_trades", []))
+                balance = SHARED.get("balance", 0)
+
+            if not trades:
+                return {"drawdown_probs": {}, "peak_balance": balance,
+                        "current_balance": balance, "n_trades": 0,
+                        "growth_rate": 0, "volatility": 0}
+
+            # Calculate returns from trade history
+            returns = []
+            for t in trades:
+                cost = t.get("cost", 0)
+                pnl = t.get("pnl", 0)
+                if cost > 0 and t.get("status") in ("win", "loss"):
+                    returns.append(pnl / cost)
+
+            n = len(returns)
+            if n < 2:
+                return {"drawdown_probs": {}, "peak_balance": balance,
+                        "current_balance": balance, "n_trades": n,
+                        "growth_rate": 0, "volatility": 0}
+
+            # Growth rate (mean return) and volatility (std dev)
+            g = sum(returns) / n
+            variance = sum((r - g) ** 2 for r in returns) / (n - 1)
+            s = math.sqrt(variance) if variance > 0 else 0.001
+
+            # Drawdown probability: P(reaching x% of peak) ≈ x^(2g/s²)
+            # x is fraction of peak (e.g., 0.9 = 10% drawdown)
+            exponent = (2 * g) / (s * s) if s > 0 else 0
+            drawdown_probs = {}
+            for dd_pct in [5, 10, 15, 20, 25, 30, 50]:
+                x = 1.0 - dd_pct / 100.0  # fraction remaining
+                if x > 0 and exponent > 0:
+                    prob = min(1.0, x ** exponent)
+                elif exponent <= 0:
+                    prob = 1.0  # negative growth → drawdown almost certain
+                else:
+                    prob = 0.0
+                drawdown_probs[str(dd_pct)] = round(prob * 100, 1)
+
+            # Track peak balance from trade history
+            running = balance
+            peak = balance
+            for t in reversed(trades):
+                pnl = t.get("pnl", 0)
+                if t.get("status") in ("win", "loss"):
+                    running -= pnl
+                    peak = max(peak, running)
+
+            return {
+                "drawdown_probs": drawdown_probs,
+                "peak_balance": round(peak, 2),
+                "current_balance": round(balance, 2),
+                "current_drawdown_pct": round((1 - balance / peak) * 100, 1) if peak > 0 else 0,
+                "n_trades": n,
+                "growth_rate": round(g * 100, 2),
+                "volatility": round(s * 100, 2),
+                "kelly_edge_ratio": round(g / (s * s), 3) if s > 0 else 0,
+            }
+        except Exception:
+            return {"drawdown_probs": {}, "peak_balance": 0, "current_balance": 0,
+                    "n_trades": 0, "growth_rate": 0, "volatility": 0}
 
     def log_message(self, *a):
         pass
