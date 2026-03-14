@@ -1,0 +1,48 @@
+# Kalshi Bot Dashboard — Caddy reverse proxy with automatic HTTPS
+#
+# Usage:
+#   1. Replace "kalshi.yourdomain.com" with your actual domain
+#   2. Copy to /etc/caddy/Caddyfile
+#   3. Run: caddy hash-password --plaintext YOUR_PASSWORD
+#   4. Replace the bcrypt hash below with the output
+#   5. systemctl restart caddy
+#
+# Without a domain (IP-only access):
+#   Replace the domain line with ":443" or just use http://YOUR_IP:9000 directly.
+
+kalshi.yourdomain.com {
+    reverse_proxy localhost:9000
+
+    # Basic authentication
+    # Generate hash: caddy hash-password --plaintext YOUR_PASSWORD
+    basicauth {
+        admin $2a$14$REPLACE_WITH_BCRYPT_HASH
+    }
+
+    # Security headers
+    header {
+        X-Frame-Options DENY
+        X-Content-Type-Options nosniff
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy strict-origin-when-cross-origin
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        -Server
+    }
+
+    # Rate limiting for API endpoints
+    @api path /api/*
+    handle @api {
+        reverse_proxy localhost:9000
+    }
+
+    # Compression
+    encode gzip zstd
+
+    # Access logging
+    log {
+        output file /var/log/caddy/kalshi-access.log {
+            roll_size 10mb
+            roll_keep 3
+        }
+    }
+}

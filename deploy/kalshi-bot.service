@@ -1,0 +1,39 @@
+[Unit]
+Description=Kalshi AI Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kalshi
+Group=kalshi
+WorkingDirectory=/home/kalshi/kalshi-bot
+
+# Load environment variables from .env
+EnvironmentFile=/home/kalshi/kalshi-bot/.env
+
+# Start the bot (dry-run by default -- use --live in .env override)
+ExecStart=/home/kalshi/kalshi-bot/venv/bin/python kalshi-agent.py --config kalshi-config.json
+
+# Restart on crash, but not on clean exit
+Restart=on-failure
+RestartSec=30
+
+# Logging
+StandardOutput=append:/home/kalshi/kalshi-bot/data/kalshi-agent.log
+StandardError=append:/home/kalshi/kalshi-bot/data/kalshi-agent-error.log
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/kalshi/kalshi-bot/data
+ReadWritePaths=/home/kalshi/kalshi-bot/kalshi-trades.json
+ReadWritePaths=/home/kalshi/kalshi-bot/kalshi-calibration.json
+ReadWritePaths=/home/kalshi/kalshi-bot/kalshi-agent.log
+
+# Resource limits
+MemoryMax=1G
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target

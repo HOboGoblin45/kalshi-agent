@@ -29,9 +29,31 @@ class RiskMgr:
         with open(CFG["trade_log"], "w") as f:
             json.dump(self.trades, f, indent=2, default=str)
 
+    def _backup_data(self):
+        """Daily backup of trade data."""
+        import shutil
+        backup_dir = os.path.join(os.path.dirname(CFG["trade_log"]) or ".", "data", "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        stamp = datetime.date.today().isoformat()
+        src = CFG["trade_log"]
+        dst = os.path.join(backup_dir, f"trades-{stamp}.json")
+        if os.path.exists(src) and not os.path.exists(dst):
+            try:
+                shutil.copy2(src, dst)
+                log.info(f"Trade data backed up to {dst}")
+                # Keep only last 30 backups
+                backups = sorted(
+                    [f for f in os.listdir(backup_dir) if f.startswith("trades-")],
+                    reverse=True)
+                for old in backups[30:]:
+                    os.remove(os.path.join(backup_dir, old))
+            except Exception as e:
+                log.debug(f"Backup failed: {e}")
+
     def new_day(self):
         if datetime.date.today() != self.today:
             log.info("New day -- reset")
+            self._backup_data()
             self.today = datetime.date.today()
             self.day_trades = 0
             self.day_pnl = 0.0
