@@ -144,9 +144,10 @@ class BracketEvent:
 
     @staticmethod
     def _to_cents(val):
+        """Convert a price to cents. Dollar values (0 < v < 1) become cents."""
         try:
             v = float(val or 0)
-            if 0 < v <= 1.0:
+            if 0 < v < 1.0:
                 return int(round(v * 100))
             return int(round(v))
         except (ValueError, TypeError):
