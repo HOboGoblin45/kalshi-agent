@@ -56,7 +56,11 @@
       "electron/**/*",
       "dist/**/*",
       "modules/**/*",
+      "kalshi-trading-skill/scripts/**/*",
+      "scripts/mock_dashboard_server.py",
       "kalshi-agent.py",
+      "kalshi-config.example.json",
+      "requirements.txt",
       "package.json"
     ],
     "directories": {

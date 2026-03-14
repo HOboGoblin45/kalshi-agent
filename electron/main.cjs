@@ -58,15 +58,35 @@ async function ensureBackendRunning() {
   const healthy = await pingDashboard();
   if (healthy) return true;
 
-  const cwd = path.resolve(__dirname, '..');
-  const cfg = path.join(cwd, 'kalshi-config.json');
   const fs = require('fs');
-  const logPath = path.join(cwd, 'electron-backend.log');
+
+  // Resolve paths: support both dev (source tree) and packaged (asar) environments
+  const isDev = !app.isPackaged;
+  const cwd = isDev
+    ? path.resolve(__dirname, '..')
+    : path.dirname(app.getPath('exe'));
+
+  // Look for config in multiple locations
+  const configCandidates = [
+    path.join(cwd, 'kalshi-config.json'),
+    path.join(app.getPath('userData'), 'kalshi-config.json'),
+    path.join(cwd, 'kalshi-config.example.json'),
+  ];
+  const cfg = configCandidates.find((p) => fs.existsSync(p));
+
+  const logPath = path.join(app.getPath('userData'), 'electron-backend.log');
   const logFd = fs.openSync(logPath, 'w');
 
   // SAFETY: Desktop app ALWAYS starts in dry-run mode.
   // Live trading requires explicit --live flag from command line, never from Electron.
-  const args = ['kalshi-agent.py', '--config', cfg, '--dry-run'];
+  const agentScript = isDev
+    ? path.join(cwd, 'kalshi-agent.py')
+    : path.join(cwd, 'kalshi-agent.py');
+  const args = [agentScript, '--dry-run'];
+  if (cfg) {
+    args.push('--config', cfg);
+  }
+
   backendProc = spawn('python', args, {
     cwd,
     windowsHide: true,
@@ -88,14 +108,19 @@ async function ensureBackendRunning() {
     await new Promise((r) => setTimeout(r, 500));
   }
 
-  // If real agent failed, try the mock server as fallback
+  // If real agent failed, try the mock server as fallback (dev only)
   if (!await pingDashboard()) {
     try { fs.writeSync(logFd, '\n[electron] real agent failed, trying mock server...\n'); } catch (_) {}
     stopBackend();
-    const mockScript = path.join(cwd, 'scripts', 'mock_dashboard_server.py');
+    const mockScript = path.join(isDev ? path.resolve(__dirname, '..') : cwd, 'scripts', 'mock_dashboard_server.py');
+    if (!fs.existsSync(mockScript)) {
+      try { fs.writeSync(logFd, '\n[electron] mock server not found, giving up\n'); } catch (_) {}
+      try { fs.closeSync(logFd); } catch (_) {}
+      return false;
+    }
     const mockArgs = [mockScript, '--port', '9000'];
     backendProc = spawn('python', mockArgs, {
-      cwd,
+      cwd: isDev ? path.resolve(__dirname, '..') : cwd,
       windowsHide: true,
       stdio: ['ignore', logFd, logFd],
     });

@@ -7,8 +7,14 @@ import hmac
 from modules.config import CFG, SHARED, SHARED_LOCK, log
 
 # Resolve the dist/ directory (built React app)
+# Works in both dev (source tree) and packaged (Electron asar) environments
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DIST_DIR = os.path.join(_BASE_DIR, "dist")
+if not os.path.isdir(_DIST_DIR):
+    # Fallback: check relative to cwd (packaged mode may set cwd differently)
+    _alt = os.path.join(os.getcwd(), "dist")
+    if os.path.isdir(_alt):
+        _DIST_DIR = _alt
 
 MIME_TYPES = {
     ".html": "text/html",
