@@ -878,6 +878,8 @@ def main():
     ap.add_argument("--config", type=str, help="Path to config JSON file")
     ap.add_argument("--scan-once", action="store_true"); ap.add_argument("--no-dashboard", action="store_true")
     ap.add_argument("--report", action="store_true", help="Generate performance report and exit")
+    ap.add_argument("--backtest", action="store_true", help="Run backtest on kalshi-trades.json and exit")
+    ap.add_argument("--backtest-json", action="store_true", help="Output backtest results as JSON")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Force dry-run mode (default)")
     mode.add_argument("--live", action="store_true", help="Enable live order placement (requires explicit intent)")
@@ -892,6 +894,37 @@ def main():
     if CFG.get("polymarket_private_key") and not CFG.get("polymarket_enabled"):
         CFG["polymarket_enabled"] = True
         log.info("Polymarket auto-enabled (private key detected)")
+
+    if args.backtest:
+        from modules.backtester import run_backtest, analyze_calibration, format_report
+        trades_file = CFG.get("trades_file", "kalshi-trades.json")
+        if not os.path.exists(trades_file):
+            print(f"Error: {trades_file} not found"); return
+        with open(trades_file) as f:
+            trades = json.load(f)
+        result = run_backtest(trades, initial_bankroll=CFG.get("max_bankroll", 100.0))
+        cal_file = CFG.get("calibration_file", "kalshi-calibration.json")
+        calibration = None
+        if os.path.exists(cal_file):
+            with open(cal_file) as f:
+                calibration = analyze_calibration(json.load(f))
+        if args.backtest_json:
+            out = {
+                "total_trades": len(result.trades), "wins": result.wins,
+                "losses": result.losses, "win_rate": round(result.win_rate, 1),
+                "total_pnl": round(result.total_pnl, 2),
+                "max_drawdown": round(result.max_drawdown, 2),
+                "profit_factor": round(result.profit_factor, 2),
+                "sharpe": result.sharpe_estimate,
+                "by_category": dict(result.by_category),
+                "by_platform": dict(result.by_platform),
+            }
+            if calibration:
+                out["calibration"] = calibration
+            print(json.dumps(out, indent=2))
+        else:
+            print(format_report(result, calibration))
+        return
 
     a = Agent()
     try:
