@@ -30,6 +30,8 @@ from modules.risk import RiskMgr, ExitManager
 from modules.debate import DebateEngine
 from modules.scoring import kelly, calc_hours_left, score_market, filter_and_rank, is_execution_eligible
 from modules.calibration import CalibrationTracker
+from modules.execution import build_execution_plan, should_quickflip
+from modules.market_state import MARKET_STATE
 from modules.arbitrage import (
     match_markets, scan_cross_platform_arbitrage, execute_cross_arb,
     scan_arbitrage, _best_ask, _estimate_slippage, route_order, get_best_price,
