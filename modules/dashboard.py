@@ -6,6 +6,7 @@ import hmac
 
 from modules.config import CFG, SHARED, SHARED_LOCK, log
 from modules.market_state import MARKET_STATE
+from modules.calibration import CalibrationTracker
 
 # Resolve the dist/ directory (built React app)
 # Works in both dev (source tree) and packaged (Electron asar) environments
@@ -75,6 +76,7 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
         if self.path == '/api/markets': return self._json(self._markets())
         if self.path == '/api/positions': return self._json(self._positions())
         if self.path == '/api/trades': return self._json(self._trades())
+        if self.path == '/api/calibration': return self._json(self._calibration())
 
         # Serve built React app from dist/
         if os.path.isdir(_DIST_DIR):
@@ -186,6 +188,14 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
 
     def _trades(self):
         return SHARED.get("_trades", [])
+
+    def _calibration(self):
+        try:
+            tracker = CalibrationTracker()
+            return tracker.summary()
+        except Exception:
+            return {"total_predictions": 0, "resolved": 0, "pending": 0,
+                    "overall_brier": 0.25, "overall_log_loss": 1.0, "category_stats": {}}
 
     def log_message(self, *a):
         pass

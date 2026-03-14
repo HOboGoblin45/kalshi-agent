@@ -59,7 +59,7 @@ function Sidebar() {
           <span className="text-accent-green animate-cursor">_</span>
         </div>
         <div className="flex items-center justify-between mt-1.5">
-          <span className="text-xs text-accent-gold">[LIVE]</span>
+          <ModeBadge />
           <NavLink to="/profile" className="text-text-tertiary hover:text-accent-green">
             <Settings size={16} />
           </NavLink>
@@ -101,10 +101,10 @@ function TopBar() {
       <div className="flex items-center gap-2 md:hidden">
         <span className="text-accent-green font-bold text-sm term-glow">KALSHI</span>
       </div>
-      <div className="hidden md:flex items-center gap-2 text-xs text-text-tertiary">
+      <div className="hidden md:flex items-center gap-3 text-xs text-text-tertiary">
         <span>sys://dashboard</span>
         <span className="text-border-subtle">|</span>
-        <span>uptime:active</span>
+        <FeedHealthBar />
       </div>
       <div className="flex items-center gap-4 text-sm">
         {isDryRun && (
@@ -138,6 +138,44 @@ function TopBar() {
         </span>
       </div>
     </header>
+  );
+}
+
+function ModeBadge() {
+  const agentState = useStore((s) => s.agentState);
+  const isDryRun = Boolean(agentState?.dry_run);
+  return (
+    <span className={`text-xs font-bold ${isDryRun ? "text-accent-gold" : "text-accent-red animate-pulse"}`}>
+      {isDryRun ? "[DRY-RUN]" : "[LIVE]"}
+    </span>
+  );
+}
+
+function FeedHealthBar() {
+  const agentState = useStore((s) => s.agentState);
+  const feedHealth = agentState?.feed_health;
+  const staleCount = agentState?.stale_markets ?? 0;
+  if (!feedHealth) return null;
+
+  return (
+    <div className="flex items-center gap-3 text-[10px]">
+      {Object.entries(feedHealth).map(([venue, info]: [string, any]) => (
+        <div key={venue} className="flex items-center gap-1">
+          <span className={`inline-block w-1.5 h-1.5 rounded-full ${
+            info.status === "healthy" ? "bg-accent-green" :
+            info.status === "degraded" ? "bg-accent-gold animate-pulse" :
+            "bg-text-tertiary"
+          }`} />
+          <span className="text-text-tertiary uppercase">{venue}</span>
+          {info.errors > 0 && (
+            <span className="text-accent-red">({info.errors}err)</span>
+          )}
+        </div>
+      ))}
+      {staleCount > 0 && (
+        <span className="text-accent-gold">{staleCount} stale</span>
+      )}
+    </div>
   );
 }
 
