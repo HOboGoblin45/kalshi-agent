@@ -378,11 +378,16 @@ def scan_cross_platform_arbitrage(matches, kalshi_api, poly_api, fee_kalshi=0.07
     return opportunities
 
 
-def execute_cross_arb(kalshi_api, poly_api, opp, max_cost=10.0, dry_run=False):
+def execute_cross_arb(kalshi_api, poly_api, opp, max_cost=10.0, dry_run=False, parallel=False):
     """Execute both legs of a cross-platform arb.
 
     SAFETY: only executes "locked" arb classification by default.
     Soft/speculative opportunities are logged but not executed.
+
+    Args:
+        parallel: If True, execute both legs simultaneously using threads.
+                  Faster but riskier -- if one leg fails, the other may have filled.
+                  Default False (sequential: Kalshi first, wait, then Polymarket).
     """
     arb_class = opp.get("arb_class", "speculative")
     if arb_class not in ("locked",) and not dry_run:
@@ -391,30 +396,102 @@ def execute_cross_arb(kalshi_api, poly_api, opp, max_cost=10.0, dry_run=False):
 
     cost_per_pair = opp["cost_cents"] / 100.0
     contracts = min(int(max_cost / cost_per_pair) if cost_per_pair > 0 else 0, 20)
-    if contracts == 0: return {"success": False, "reason": "Zero contracts"}
+    if contracts == 0:
+        return {"success": False, "reason": "Zero contracts"}
     total_cost = round(contracts * cost_per_pair, 2)
     total_profit = round(contracts * opp["profit_cents"] / 100, 2)
-    if dry_run: return {"success": True, "dry_run": True, "contracts": contracts,
-        "total_cost": total_cost, "expected_profit": total_profit, "strategy": opp["strategy_desc"]}
-    try:
-        side1 = "yes" if opp["strategy"] == 1 else "no"
+
+    if dry_run:
+        return {"success": True, "dry_run": True, "contracts": contracts,
+            "total_cost": total_cost, "expected_profit": total_profit,
+            "strategy": opp["strategy_desc"], "execution_mode": "parallel" if parallel else "sequential"}
+
+    side1 = "yes" if opp["strategy"] == 1 else "no"
+    side2_token = opp.get("poly_no_token", opp["poly_token"]) if opp["strategy"] == 1 else opp["poly_token"]
+    side2 = "no" if opp["strategy"] == 1 else "yes"
+
+    def _leg1_kalshi():
         kalshi_api.place_order(opp["kalshi_ticker"], side1, contracts, opp["k_price"])
-        log.info(f"  ARB Leg 1 (Kalshi): {side1} {contracts}x @{opp['k_price']}c")
-    except Exception as e:
-        log.error(f"  ARB Leg 1 FAILED: {e}"); return {"success": False, "reason": f"Leg 1 failed: {e}"}
-    time.sleep(1)
-    try:
-        if opp["strategy"] == 1:
-            token = opp.get("poly_no_token", opp["poly_token"])
-            poly_api.place_order(token, "no", contracts, opp["p_price"])
+        return True
+
+    def _leg2_poly():
+        poly_api.place_order(side2_token, side2, contracts, opp["p_price"])
+        return True
+
+    if parallel:
+        # PARALLEL EXECUTION: both legs fire simultaneously
+        import concurrent.futures
+        log.info(f"  ARB: Parallel execution -- firing both legs simultaneously")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(_leg1_kalshi)
+            f2 = pool.submit(_leg2_poly)
+
+            leg1_ok, leg2_ok = False, False
+            leg1_err, leg2_err = None, None
+            try:
+                leg1_ok = f1.result(timeout=30)
+                log.info(f"  ARB Leg 1 (Kalshi): {side1} {contracts}x @{opp['k_price']}c OK")
+            except Exception as e:
+                leg1_err = e
+                log.error(f"  ARB Leg 1 (Kalshi) FAILED: {e}")
+            try:
+                leg2_ok = f2.result(timeout=30)
+                log.info(f"  ARB Leg 2 (Polymarket): {side2} {contracts}x @{opp['p_price']}c OK")
+            except Exception as e:
+                leg2_err = e
+                log.error(f"  ARB Leg 2 (Polymarket) FAILED: {e}")
+
+        if leg1_ok and leg2_ok:
+            ARB_TRACKER.record_entry(
+                key=opp["kalshi_ticker"],
+                kalshi_ticker=opp["kalshi_ticker"],
+                poly_token=side2_token,
+                strategy_desc=opp["strategy_desc"],
+                k_price=opp["k_price"], p_price=opp["p_price"],
+                contracts=contracts, profit_cents=opp["profit_cents"])
+            return {"success": True, "contracts": contracts, "total_cost": total_cost,
+                "expected_profit": total_profit, "strategy": opp["strategy_desc"],
+                "execution_mode": "parallel"}
+        elif leg1_ok and not leg2_ok:
+            return {"success": False, "reason": f"Leg 2 failed: {leg2_err}",
+                "leg1_filled": True, "naked_position": True, "execution_mode": "parallel"}
+        elif not leg1_ok and leg2_ok:
+            return {"success": False, "reason": f"Leg 1 failed: {leg1_err}",
+                "leg2_filled": True, "naked_position": True, "execution_mode": "parallel"}
         else:
-            poly_api.place_order(opp["poly_token"], "yes", contracts, opp["p_price"])
-        log.info(f"  ARB Leg 2 (Polymarket): {contracts}x @{opp['p_price']}c")
-    except Exception as e:
-        log.error(f"  ARB Leg 2 FAILED: {e} -- Leg 1 NAKED!!")
-        return {"success": False, "reason": f"Leg 2 failed: {e}", "leg1_filled": True, "naked_position": True}
-    return {"success": True, "contracts": contracts, "total_cost": total_cost,
-        "expected_profit": total_profit, "strategy": opp["strategy_desc"]}
+            return {"success": False, "reason": f"Both legs failed: L1={leg1_err}, L2={leg2_err}",
+                "execution_mode": "parallel"}
+
+    else:
+        # SEQUENTIAL EXECUTION (default): Kalshi first, wait, then Polymarket
+        try:
+            _leg1_kalshi()
+            log.info(f"  ARB Leg 1 (Kalshi): {side1} {contracts}x @{opp['k_price']}c")
+        except Exception as e:
+            log.error(f"  ARB Leg 1 FAILED: {e}")
+            return {"success": False, "reason": f"Leg 1 failed: {e}"}
+
+        time.sleep(1)
+
+        try:
+            _leg2_poly()
+            log.info(f"  ARB Leg 2 (Polymarket): {side2} {contracts}x @{opp['p_price']}c")
+        except Exception as e:
+            log.error(f"  ARB Leg 2 FAILED: {e} -- Leg 1 NAKED!!")
+            return {"success": False, "reason": f"Leg 2 failed: {e}",
+                "leg1_filled": True, "naked_position": True}
+
+        ARB_TRACKER.record_entry(
+            key=opp["kalshi_ticker"],
+            kalshi_ticker=opp["kalshi_ticker"],
+            poly_token=side2_token,
+            strategy_desc=opp["strategy_desc"],
+            k_price=opp["k_price"], p_price=opp["p_price"],
+            contracts=contracts, profit_cents=opp["profit_cents"])
+
+        return {"success": True, "contracts": contracts, "total_cost": total_cost,
+            "expected_profit": total_profit, "strategy": opp["strategy_desc"],
+            "execution_mode": "sequential"}
 
 
 def route_order(side, kalshi_price, poly_price, kalshi_fee=0.07, poly_fee=0.02):
