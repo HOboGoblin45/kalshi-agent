@@ -8,6 +8,7 @@ import {
   Settings,
   Loader2,
   AlertCircle,
+  Target,
 } from "lucide-react";
 import { useStore } from "../store/useStore";
 
@@ -16,6 +17,7 @@ const navItems = [
   { to: "/bot", icon: Brain, label: "Bot Intel", cmd: "bot" },
   { to: "/positions", icon: Zap, label: "Positions", cmd: "pos" },
   { to: "/alerts", icon: Bell, label: "Logs", cmd: "log" },
+  { to: "/calibration", icon: Target, label: "Calibrate", cmd: "cal" },
   { to: "/profile", icon: User, label: "Config", cmd: "cfg" },
 ];
 

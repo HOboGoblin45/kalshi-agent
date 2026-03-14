@@ -182,6 +182,142 @@ def build_execution_plan(
     )
 
 
+class MakerOrderManager:
+    """Manage resting maker orders: track, cancel stale, replace with better prices.
+
+    When the execution engine decides on a 'maker' action, we place a limit order
+    inside the spread. This manager tracks those orders and handles:
+    1. Cancelling orders that have been resting too long without fill
+    2. Replacing orders when the book moves (price improvement)
+    3. Cancelling orders when edge disappears
+    """
+
+    def __init__(self, api):
+        self.api = api
+        self._orders: dict = {}  # order_id -> {ticker, side, price, contracts, placed_at, max_age_s}
+        self._max_age_seconds = 300  # 5 minutes default
+
+    def place_maker_order(self, ticker, side, contracts, price_cents, max_age_s=None):
+        """Place a maker (limit) order and track it."""
+        if CFG.get("dry_run", True):
+            log.info(f"  MAKER DRY-RUN: {side} {contracts}x {ticker} @{price_cents}c")
+            return None
+
+        try:
+            res = self.api.place_order(ticker, side, contracts, price_cents)
+            order_id = res.get("order", {}).get("order_id", "")
+            if order_id:
+                self._orders[order_id] = {
+                    "ticker": ticker,
+                    "side": side,
+                    "price": price_cents,
+                    "contracts": contracts,
+                    "placed_at": time.time(),
+                    "max_age_s": max_age_s or self._max_age_seconds,
+                }
+                log.info(f"  MAKER PLACED: {side} {contracts}x {ticker} @{price_cents}c (id={order_id[:12]})")
+            return order_id
+        except Exception as e:
+            log.error(f"  MAKER ORDER FAILED: {e}")
+            return None
+
+    def check_and_manage(self):
+        """Check all tracked maker orders: cancel stale, update prices.
+
+        Call this periodically (e.g., every scan cycle).
+        """
+        if not self._orders:
+            return
+
+        expired = []
+        for order_id, info in list(self._orders.items()):
+            age = time.time() - info["placed_at"]
+            max_age = info["max_age_s"]
+
+            if age > max_age:
+                # Cancel stale order
+                try:
+                    self.api.cancel_order(order_id)
+                    log.info(f"  MAKER CANCEL (stale): {info['ticker']} {info['side']} @{info['price']}c after {age:.0f}s")
+                    expired.append(order_id)
+                except Exception as e:
+                    log.debug(f"  Cancel failed for {order_id}: {e}")
+                    expired.append(order_id)  # Remove from tracking regardless
+                continue
+
+            # Check if book has moved and we should reprice
+            book = MARKET_STATE.get_book_if_fresh(info["ticker"])
+            if book:
+                self._check_reprice(order_id, info, book)
+
+        for oid in expired:
+            self._orders.pop(oid, None)
+
+    def _check_reprice(self, order_id, info, book):
+        """Reprice a maker order if the book has moved significantly."""
+        side = info["side"]
+        current_price = info["price"]
+
+        if side == "yes" and book.best_yes_bid is not None:
+            # Our bid should be at or near best bid
+            best_bid = book.best_yes_bid
+            if current_price < best_bid - 2:
+                # Book has moved up, we should improve our price
+                new_price = best_bid + 1
+                self._replace_order(order_id, info, new_price)
+            elif current_price > best_bid + 5:
+                # Book has moved down significantly, cancel (edge may be gone)
+                try:
+                    self.api.cancel_order(order_id)
+                    log.info(f"  MAKER CANCEL (book moved): {info['ticker']} our={current_price}c best_bid={best_bid}c")
+                    self._orders.pop(order_id, None)
+                except Exception:
+                    pass
+
+        elif side == "no" and book.best_no_bid is not None:
+            best_bid = book.best_no_bid
+            if current_price < best_bid - 2:
+                new_price = best_bid + 1
+                self._replace_order(order_id, info, new_price)
+            elif current_price > best_bid + 5:
+                try:
+                    self.api.cancel_order(order_id)
+                    log.info(f"  MAKER CANCEL (book moved): {info['ticker']} our={current_price}c best_bid={best_bid}c")
+                    self._orders.pop(order_id, None)
+                except Exception:
+                    pass
+
+    def _replace_order(self, order_id, info, new_price):
+        """Cancel and replace a maker order at a new price."""
+        try:
+            self.api.cancel_order(order_id)
+            self._orders.pop(order_id, None)
+
+            new_id = self.place_maker_order(
+                info["ticker"], info["side"], info["contracts"],
+                new_price, info["max_age_s"])
+            if new_id:
+                log.info(f"  MAKER REPRICED: {info['ticker']} {info['price']}c -> {new_price}c")
+        except Exception as e:
+            log.debug(f"  Maker replace failed: {e}")
+
+    def cancel_all(self, ticker=None):
+        """Cancel all tracked maker orders, optionally for a specific ticker."""
+        for order_id, info in list(self._orders.items()):
+            if ticker and info["ticker"] != ticker:
+                continue
+            try:
+                self.api.cancel_order(order_id)
+                log.info(f"  MAKER CANCEL: {info['ticker']} @{info['price']}c")
+            except Exception:
+                pass
+            self._orders.pop(order_id, None)
+
+    @property
+    def active_orders(self) -> dict:
+        return dict(self._orders)
+
+
 def should_quickflip(market, features=None) -> tuple:
     """Evaluate whether a quick-flip entry is justified.
 

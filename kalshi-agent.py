@@ -30,7 +30,7 @@ from modules.risk import RiskMgr, ExitManager
 from modules.debate import DebateEngine
 from modules.scoring import kelly, calc_hours_left, score_market, filter_and_rank, is_execution_eligible
 from modules.calibration import CalibrationTracker
-from modules.execution import build_execution_plan, should_quickflip
+from modules.execution import build_execution_plan, should_quickflip, MakerOrderManager
 from modules.market_state import MARKET_STATE
 from modules.arbitrage import (
     match_markets, scan_cross_platform_arbitrage, execute_cross_arb,
@@ -38,6 +38,7 @@ from modules.arbitrage import (
     find_quickflip_candidates, get_bankroll_tier, get_dynamic_kelly, BANKROLL_TIERS,
 )
 from modules.dashboard import start_dashboard
+from modules.ws_feed import KalshiWSFeed
 
 
 # ════════════════════════════════════════
@@ -70,6 +71,9 @@ class Agent:
                 log.error(f"Polymarket init failed: {e} -- running Kalshi-only")
                 self.poly_enabled = False
         self.exit_mgr = ExitManager(self.api, self.risk, self.notifier, poly_api=self.poly_api)
+        self.maker_mgr = MakerOrderManager(self.api)
+        self.ws_feed = KalshiWSFeed()
+        self._ws_started = False
 
     @staticmethod
     def _clean_title(m):
@@ -258,6 +262,8 @@ class Agent:
         scan_events.append(f"Balance: Kalshi ${bal:.2f} + Polymarket ${poly_bal:.2f} = ${combined_bal:.2f}")
         # Check calibration outcomes for settled markets
         self._check_calibration_outcomes()
+        # Manage resting maker orders (cancel stale, reprice)
+        self.maker_mgr.check_and_manage()
         if combined_bal < 1:
             SHARED["status"] = "Low balance"
             scan_events.append("Scan aborted: combined balance below $1")
@@ -316,6 +322,13 @@ class Agent:
                 log.error(f"Polymarket market load failed: {e}")
         for m in mkts:
             if "platform" not in m: m["platform"] = "kalshi"
+
+        # ── START WEBSOCKET FEED (first scan only) ──
+        if not self._ws_started and all_scored:
+            ws_tickers = [m["ticker"] for m in all_scored[:30] if m.get("ticker")]
+            if ws_tickers:
+                self.ws_feed.start(ws_tickers)
+                self._ws_started = True
 
         # ── PRE-FETCH LIVE DATA ──
         self._update_progress(0, "Initializing", "Fetching live data...", total_phases)
@@ -736,8 +749,10 @@ class Agent:
             scan_events.append(f"TRADE: BUY {r['side']} {contracts}x {tk} @{bp}c on {trade_platform} (conf={r['confidence']}% edge={r['edge']}%)")
             try:
                 if CFG.get("dry_run", True):
-                    log.info("  DRY-RUN: order not sent")
-                    scan_events.append(f"  {tk}: DRY-RUN -- order simulated, not sent")
+                    log.info(f"  DRY-RUN: {exec_plan.action} order not sent")
+                    scan_events.append(f"  {tk}: DRY-RUN -- {exec_plan.action} order simulated, not sent")
+                elif exec_plan.action == "maker" and trade_platform == "kalshi":
+                    self.maker_mgr.place_maker_order(tk, side_lower, contracts, bp)
                 else:
                     if trade_platform == "kalshi":
                         res = self.api.place_order(tk, side_lower, contracts, bp)
@@ -814,6 +829,7 @@ class Agent:
                 except KeyboardInterrupt: raise
         finally:
             self.stop_event.set()
+            self.ws_feed.stop()
 
 
 def main():

@@ -129,6 +129,29 @@ class KalshiAPI:
         else: o["no_price"] = int(price_cents)
         return self._req("POST", "/portfolio/orders", o)
 
+    def cancel_order(self, order_id):
+        """Cancel a resting order by ID."""
+        return self._req("DELETE", f"/portfolio/orders/{order_id}")
+
+    def get_orders(self, ticker=None, status="resting"):
+        """List orders, optionally filtered by ticker and status."""
+        q = f"/portfolio/orders?status={status}"
+        if ticker:
+            q += f"&ticker={ticker}"
+        d = self._req("GET", q)
+        return d.get("orders", [])
+
+    def amend_order(self, order_id, new_price_cents=None, new_count=None):
+        """Amend a resting order's price or count."""
+        body = {}
+        if new_price_cents is not None:
+            body["price"] = int(new_price_cents)
+        if new_count is not None:
+            body["count"] = int(new_count)
+        if not body:
+            return {}
+        return self._req("PATCH", f"/portfolio/orders/{order_id}", body)
+
 
 def _normalize_kalshi(m):
     """Convert Kalshi API dollar-string fields to cent integers for backward compat.
