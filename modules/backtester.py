@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-# DEPRECATED: This file has been promoted to modules/backtester.py
-# Keep this copy for backward compatibility with the skill package.
 """
 Backtesting engine for the Kalshi AI Trading Agent.
 

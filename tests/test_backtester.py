@@ -1,9 +1,9 @@
 """Unit tests for the backtesting engine."""
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "kalshi-trading-skill", "scripts"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import unittest
-from backtester import run_backtest, analyze_calibration, _infer_category, format_report
+from modules.backtester import run_backtest, analyze_calibration, _infer_category, format_report
 
 
 SAMPLE_TRADES = [
