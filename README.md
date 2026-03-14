@@ -21,6 +21,8 @@ modules/
   calibration.py        Brier score, log loss, reliability bins, per-category stats
   execution.py          Execution policy engine (taker vs maker vs no_trade)
   arbitrage.py          Cross-platform arb with quality classification
+  backtester.py         Historical trade backtesting (P&L, Sharpe, calibration)
+  forward_backtest.py   Forward-simulation backtester (Brier score vs market)
   risk.py               Position sizing, exit management, circuit breakers
   debate.py             Bull vs Bear AI debate using Claude Sonnet
   apis.py               Kalshi REST + Polymarket CLOB API clients
@@ -29,7 +31,8 @@ modules/
   notifier.py           Email trade notifications
 src/                    React + TypeScript + Tailwind frontend
 electron/               Desktop app packaging
-tests/                  262 unit tests covering all production modules
+scripts/validate.sh     Pre-deploy validation (30 checks)
+tests/                  300 unit tests covering all production modules
 ```
 
 ## Quick Start
@@ -117,14 +120,55 @@ npm run desktop:dist:win      # Windows installer
 
 See [DESKTOP_PACKAGING.md](DESKTOP_PACKAGING.md) for full guide.
 
+## Backtesting
+
+### Historical Backtest (trade replay)
+
+Replay past trades from `kalshi-trades.json` to analyze P&L, win rate, Sharpe ratio, and per-category performance:
+
+```bash
+python kalshi-agent.py --backtest                    # Human-readable report
+python kalshi-agent.py --backtest --backtest-json     # JSON output
+```
+
+### Forward Backtest (AI prediction accuracy)
+
+Test how well the debate engine predicts resolved markets. Measures Brier score and compares against market prices:
+
+```bash
+# Step 1: Collect recently resolved markets
+python kalshi-agent.py --collect-resolved
+
+# Step 2: Run AI debate on each resolved market
+python kalshi-agent.py --forward-backtest --resolved kalshi-resolved.json
+python kalshi-agent.py --forward-backtest --forward-limit 20   # Test first 20 only
+```
+
+Key metrics:
+- **Brier Score**: 0 = perfect, 0.25 = random. Lower is better.
+- **Brier Skill Score**: Positive means AI beats market prices.
+- **Side Accuracy**: How often the AI picks the correct YES/NO direction.
+
+### Dashboard
+
+Backtest results are also available via the dashboard API at `/api/backtest`.
+
+## Validation
+
+Run the pre-deploy validation script to check all modules, tests, and scoring:
+
+```bash
+bash scripts/validate.sh
+```
+
 ## Testing
 
 ```bash
-pytest -q                     # 262 Python tests
+pytest -q                     # 300 Python tests
 npm run check                 # TypeScript checks
 ```
 
-Tests cover: precision math, config safety (dry_run enforcement), scoring/Kelly, market state/staleness, execution engine, calibration metrics.
+Tests cover: precision math, config safety (dry_run enforcement), scoring/Kelly, market state/staleness, execution engine, calibration metrics, backtester, forward backtester.
 
 ## Configuration Reference
 

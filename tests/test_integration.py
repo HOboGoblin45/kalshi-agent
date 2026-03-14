@@ -433,9 +433,9 @@ class TestKellyMathUpgrades(unittest.TestCase):
     def test_dynamic_min_edge_cheap_contract(self):
         """Upgrade 4: Cheap contracts should require higher min edge."""
         from modules.scoring import dynamic_min_edge
-        # 10c contract with $0.07 fee: 2*0.07*100/10 + 1 = 2.4%
+        # 10c contract with $0.07 fee: (2*0.07)/(0.10)*100 + 1 = 141%
         min_e = dynamic_min_edge(10, 0.07, 1.0)
-        self.assertAlmostEqual(min_e, 2.4, places=1)
+        self.assertAlmostEqual(min_e, 141.0, places=1)
         # Higher fee drag than expensive contracts
         min_e_50 = dynamic_min_edge(50, 0.07, 1.0)
         self.assertGreater(min_e, min_e_50)
@@ -443,9 +443,9 @@ class TestKellyMathUpgrades(unittest.TestCase):
     def test_dynamic_min_edge_expensive_contract(self):
         """Upgrade 4: Expensive contracts have lower fee drag."""
         from modules.scoring import dynamic_min_edge
-        # 50c contract: 2*0.07*100/50 + 1 = 1.28%
+        # 50c contract: (2*0.07)/(0.50)*100 + 1 = 29%
         min_e = dynamic_min_edge(50, 0.07, 1.0)
-        self.assertAlmostEqual(min_e, 1.28, places=1)
+        self.assertAlmostEqual(min_e, 29.0, places=0)
 
     def test_category_kelly_caps(self):
         """Upgrade 3: Weather cap should be higher than crypto."""

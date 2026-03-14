@@ -2,9 +2,6 @@
 import os, sys, json, datetime, logging, threading, re
 from logging.handlers import RotatingFileHandler
 
-# Add scripts directory to path for shared module imports
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "kalshi-trading-skill", "scripts"))
-
 # ── Secret field names: these must NEVER appear with real values in tracked config ──
 SECRET_FIELDS = frozenset({
     "kalshi_api_key_id", "kalshi_private_key_path",

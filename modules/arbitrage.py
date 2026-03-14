@@ -1,16 +1,8 @@
 """Cross-platform matching, arbitrage scanning, routing, and within-market arbitrage."""
-import os, json, time
+import os, json, time, datetime
 
 from modules.config import CFG, log, parse_orderbook_price
 from modules.market_state import MARKET_STATE
-
-# Import shared implementations from scripts/
-from cross_platform import (
-    find_quickflip_candidates,
-    get_bankroll_tier,
-    get_dynamic_kelly,
-    BANKROLL_TIERS,
-)
 
 
 def _jaccard_similarity(s1, s2):
@@ -401,3 +393,143 @@ def scan_arbitrage(api, markets, ob_cache=None):
     if skipped: log.debug(f"  Arb scan: skipped {skipped} unchanged orderbooks")
     opportunities.sort(key=lambda x: x["profit_cents"], reverse=True)
     return opportunities
+
+
+# ════════════════════════════════════════
+# QUICK-FLIP SCALPING
+# ════════════════════════════════════════
+
+def find_quickflip_candidates(markets, min_price=3, max_price=15, min_volume=50):
+    """Find cheap contracts (3-15c) with decent volume for quick-flip scalping."""
+    candidates = []
+    for m in markets:
+        yc = m.get("yes_bid", m.get("last_price", 50)) or 50
+        vol = m.get("volume", 0) or 0
+        hrs = m.get("_hrs_left", 9999)
+        if min_price <= yc <= max_price and vol >= min_volume and hrs > 2:
+            candidates.append({
+                "market": m, "side": "yes", "entry_price": yc,
+                "target_price": min(yc * 2, 50), "stop_price": max(1, yc - 2),
+                "potential_roi": round((min(yc * 2, 50) - yc) / yc * 100, 0),
+                "platform": m.get("platform", "kalshi"), "hours_left": hrs,
+            })
+        no_price = 100 - yc
+        if min_price <= no_price <= max_price and vol >= min_volume and hrs > 2:
+            candidates.append({
+                "market": m, "side": "no", "entry_price": no_price,
+                "target_price": min(no_price * 2, 50), "stop_price": max(1, no_price - 2),
+                "potential_roi": round((min(no_price * 2, 50) - no_price) / no_price * 100, 0),
+                "platform": m.get("platform", "kalshi"), "hours_left": hrs,
+            })
+    candidates.sort(key=lambda x: x["potential_roi"], reverse=True)
+    return candidates[:10]
+
+
+# ════════════════════════════════════════
+# COMPOUNDING BANKROLL TIERS
+# ════════════════════════════════════════
+
+BANKROLL_TIERS = [
+    # (min_bankroll, max_bet, max_exposure, kelly_fraction)
+    (500, 60.0, 200.0, 0.20),
+    (300, 40.0, 150.0, 0.25),
+    (150, 25.0, 100.0, 0.25),
+    (75, 15.0, 60.0, 0.30),
+    (0, 8.0, 35.0, 0.30),
+]
+
+
+def get_bankroll_tier(bankroll):
+    """Get dynamic trading parameters based on current bankroll."""
+    for min_br, max_bet, max_exp, kelly in BANKROLL_TIERS:
+        if bankroll >= min_br:
+            return {"max_bet_per_trade": max_bet, "max_total_exposure": max_exp,
+                    "kelly_fraction": kelly, "tier_min": min_br}
+    return {"max_bet_per_trade": 5.0, "max_total_exposure": 25.0,
+            "kelly_fraction": 0.20, "tier_min": 0}
+
+
+def get_dynamic_kelly(base_fraction, win_streak=0, loss_cooldown=0):
+    """Adjust Kelly fraction based on recent performance."""
+    if loss_cooldown > 0:
+        return max(0.10, base_fraction * 0.5)
+    if win_streak >= 2:
+        bonus = (win_streak - 1) * 0.05
+        return min(0.50, base_fraction + bonus)
+    return base_fraction
+
+
+# ════════════════════════════════════════
+# CROSS-PLATFORM RISK MANAGEMENT
+# ════════════════════════════════════════
+
+class CrossPlatformRiskMgr:
+    """Track exposure and risk across both Kalshi and Polymarket."""
+
+    def __init__(self):
+        self.kalshi_exposure = 0.0
+        self.poly_exposure = 0.0
+        self.arb_pairs = []
+        self.win_streak = 0
+        self.loss_cooldown = 0
+
+    @property
+    def total_exposure(self):
+        return self.kalshi_exposure + self.poly_exposure
+
+    def check_directional(self, platform, cost, max_exposure):
+        if platform == "kalshi":
+            new_total = self.kalshi_exposure + cost + self.poly_exposure
+        else:
+            new_total = self.poly_exposure + cost + self.kalshi_exposure
+        return new_total <= max_exposure
+
+    def check_arbitrage(self, k_cost, p_cost, bankroll, max_arb_pct=0.50):
+        arb_total = k_cost + p_cost
+        return (self.total_exposure + arb_total) <= bankroll * max_arb_pct
+
+    def record_trade(self, platform, cost):
+        if platform == "kalshi":
+            self.kalshi_exposure += cost
+        else:
+            self.poly_exposure += cost
+
+    def record_arb(self, kalshi_cost, poly_cost):
+        self.kalshi_exposure += kalshi_cost
+        self.poly_exposure += poly_cost
+        self.arb_pairs.append({"time": datetime.datetime.now().isoformat(),
+                               "k_cost": kalshi_cost, "p_cost": poly_cost})
+
+    def record_outcome(self, is_win):
+        if is_win:
+            self.win_streak += 1; self.loss_cooldown = 0
+        else:
+            self.win_streak = 0; self.loss_cooldown = 2
+
+    def tick_cooldown(self):
+        if self.loss_cooldown > 0:
+            self.loss_cooldown -= 1
+
+    def summary(self):
+        return {"kalshi_exposure": f"${self.kalshi_exposure:.2f}",
+                "poly_exposure": f"${self.poly_exposure:.2f}",
+                "total_exposure": f"${self.total_exposure:.2f}",
+                "arb_pairs": len(self.arb_pairs), "win_streak": self.win_streak,
+                "loss_cooldown": self.loss_cooldown}
+
+
+def check_circuit_breakers(kalshi_balance, poly_balance, day_pnl, max_daily_loss=15.0,
+                            min_platform_balance=5.0, consecutive_losses=0):
+    """Check cross-platform circuit breakers."""
+    if day_pnl < -max_daily_loss:
+        return True, f"Combined daily loss ${day_pnl:.2f} exceeds limit ${max_daily_loss:.2f}"
+    if kalshi_balance < min_platform_balance and poly_balance < min_platform_balance:
+        return True, f"Both platforms below minimum balance (K:${kalshi_balance:.2f} P:${poly_balance:.2f})"
+    if consecutive_losses >= 3:
+        return True, f"{consecutive_losses} consecutive losses -- cooling down"
+    return False, "OK"
+
+
+def platform_available(balance, min_balance=5.0):
+    """Check if a platform has enough balance to trade."""
+    return balance >= min_balance

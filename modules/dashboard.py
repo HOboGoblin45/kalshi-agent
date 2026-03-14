@@ -81,6 +81,7 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
         if self.path == '/api/calibration': return self._json(self._calibration())
         if self.path == '/api/risk-stats': return self._json(self._risk_stats())
         if self.path == '/api/health': return self._json(self._health())
+        if self.path == '/api/backtest': return self._json(self._backtest())
 
         # Serve built React app from dist/
         if os.path.isdir(_DIST_DIR):
@@ -314,6 +315,43 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
             "balance_combined": round(balance + poly_bal, 2),
             "errors_last_24h": errors_24h,
         }
+
+    def _backtest(self):
+        """Run backtest on trade history and return results as JSON."""
+        try:
+            from modules.backtester import run_backtest, analyze_calibration
+            trades_file = CFG.get("trades_file", "kalshi-trades.json")
+            if not os.path.exists(trades_file):
+                return {"error": f"{trades_file} not found", "total_trades": 0}
+            with open(trades_file) as f:
+                trades = json.load(f)
+            result = run_backtest(trades, initial_bankroll=CFG.get("max_bankroll", 100.0))
+            out = {
+                "total_trades": len(result.trades),
+                "wins": result.wins, "losses": result.losses,
+                "open_trades": result.open_trades,
+                "win_rate": round(result.win_rate, 1),
+                "total_pnl": round(result.total_pnl, 2),
+                "total_wagered": round(result.total_wagered, 2),
+                "max_drawdown": round(result.max_drawdown, 2),
+                "profit_factor": round(result.profit_factor, 2),
+                "sharpe": result.sharpe_estimate,
+                "avg_win": round(result.avg_win, 2),
+                "avg_loss": round(result.avg_loss, 2),
+                "max_winning_streak": result.max_winning_streak,
+                "max_losing_streak": result.max_losing_streak,
+                "equity_curve": result.equity_curve,
+                "by_category": {k: dict(v) for k, v in result.by_category.items()},
+                "by_platform": {k: dict(v) for k, v in result.by_platform.items()},
+                "by_confidence": {k: dict(v) for k, v in result.by_confidence_bucket.items()},
+            }
+            cal_file = CFG.get("calibration_file", "kalshi-calibration.json")
+            if os.path.exists(cal_file):
+                with open(cal_file) as f:
+                    out["calibration"] = analyze_calibration(json.load(f))
+            return out
+        except Exception as e:
+            return {"error": str(e), "total_trades": 0}
 
     def log_message(self, *a):
         pass

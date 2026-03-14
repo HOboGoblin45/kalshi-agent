@@ -878,6 +878,18 @@ def main():
     ap.add_argument("--config", type=str, help="Path to config JSON file")
     ap.add_argument("--scan-once", action="store_true"); ap.add_argument("--no-dashboard", action="store_true")
     ap.add_argument("--report", action="store_true", help="Generate performance report and exit")
+    ap.add_argument("--backtest", action="store_true", help="Run backtest on kalshi-trades.json and exit")
+    ap.add_argument("--backtest-json", action="store_true", help="Output backtest results as JSON")
+    ap.add_argument("--collect-resolved", action="store_true",
+                    help="Fetch recently resolved markets for forward backtesting and exit")
+    ap.add_argument("--resolved-output", type=str, default="kalshi-resolved.json",
+                    help="Output file for --collect-resolved (default: kalshi-resolved.json)")
+    ap.add_argument("--forward-backtest", action="store_true",
+                    help="Run forward backtest on resolved markets and exit")
+    ap.add_argument("--resolved", type=str, default="kalshi-resolved.json",
+                    help="Input file for --forward-backtest (default: kalshi-resolved.json)")
+    ap.add_argument("--forward-limit", type=int, default=0,
+                    help="Max markets to test in forward backtest (0=all)")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Force dry-run mode (default)")
     mode.add_argument("--live", action="store_true", help="Enable live order placement (requires explicit intent)")
@@ -892,6 +904,104 @@ def main():
     if CFG.get("polymarket_private_key") and not CFG.get("polymarket_enabled"):
         CFG["polymarket_enabled"] = True
         log.info("Polymarket auto-enabled (private key detected)")
+
+    if args.backtest:
+        from modules.backtester import run_backtest, analyze_calibration, format_report
+        trades_file = CFG.get("trades_file", "kalshi-trades.json")
+        if not os.path.exists(trades_file):
+            print(f"Error: {trades_file} not found"); return
+        with open(trades_file) as f:
+            trades = json.load(f)
+        result = run_backtest(trades, initial_bankroll=CFG.get("max_bankroll", 100.0))
+        cal_file = CFG.get("calibration_file", "kalshi-calibration.json")
+        calibration = None
+        if os.path.exists(cal_file):
+            with open(cal_file) as f:
+                calibration = analyze_calibration(json.load(f))
+        if args.backtest_json:
+            out = {
+                "total_trades": len(result.trades), "wins": result.wins,
+                "losses": result.losses, "win_rate": round(result.win_rate, 1),
+                "total_pnl": round(result.total_pnl, 2),
+                "max_drawdown": round(result.max_drawdown, 2),
+                "profit_factor": round(result.profit_factor, 2),
+                "sharpe": result.sharpe_estimate,
+                "by_category": dict(result.by_category),
+                "by_platform": dict(result.by_platform),
+            }
+            if calibration:
+                out["calibration"] = calibration
+            print(json.dumps(out, indent=2))
+        else:
+            print(format_report(result, calibration))
+        return
+
+    if args.collect_resolved:
+        api = KalshiAPI()
+        print("Fetching recently resolved markets...")
+        markets = api.closed_markets(limit=200)
+        # Load existing resolved data to avoid duplicates
+        out_path = args.resolved_output
+        existing = []
+        if os.path.exists(out_path):
+            with open(out_path) as f:
+                existing = json.load(f)
+        seen = {m["ticker"] for m in existing}
+        new_count = 0
+        for m in markets:
+            ticker = m.get("ticker", "")
+            if ticker in seen:
+                continue
+            result_val = m.get("result", "")
+            if result_val not in ("yes", "no"):
+                continue
+            record = {
+                "ticker": ticker,
+                "title": m.get("title", ""),
+                "category": m.get("category", ""),
+                "result": result_val,
+                "close_time": m.get("close_time", ""),
+                "yes_ask": m.get("yes_ask", 0),
+                "no_ask": m.get("no_ask", 0),
+                "volume": m.get("volume", 0),
+            }
+            existing.append(record)
+            new_count += 1
+        with open(out_path, "w") as f:
+            json.dump(existing, f, indent=2)
+        print(f"Collected {new_count} new resolved markets ({len(existing)} total) -> {out_path}")
+        return
+
+    if args.forward_backtest:
+        from modules.forward_backtest import run_forward_backtest, format_forward_report
+        from modules.backtester import _infer_category
+        resolved_path = args.resolved
+        if not os.path.exists(resolved_path):
+            print(f"Error: {resolved_path} not found. Run --collect-resolved first."); return
+        with open(resolved_path) as f:
+            resolved = json.load(f)
+        if args.forward_limit > 0:
+            resolved = resolved[:args.forward_limit]
+        print(f"Running forward backtest on {len(resolved)} resolved markets...")
+        debate = DebateEngine()
+        def debate_fn(market):
+            return debate.run_debate(market)
+        fb_result = run_forward_backtest(resolved, debate_fn, category_fn=_infer_category)
+        if args.backtest_json:
+            out = {
+                "total": fb_result.total,
+                "accuracy": round(fb_result.accuracy, 1),
+                "brier_score": round(fb_result.brier_score, 4),
+                "market_brier": round(fb_result.market_brier_score, 4),
+                "brier_skill": round(fb_result.brier_skill, 4),
+                "by_category": {k: dict(v) for k, v in fb_result.by_category.items()},
+                "errors": fb_result.errors,
+                "predictions": fb_result.predictions,
+            }
+            print(json.dumps(out, indent=2))
+        else:
+            print(format_forward_report(fb_result))
+        return
 
     a = Agent()
     try:

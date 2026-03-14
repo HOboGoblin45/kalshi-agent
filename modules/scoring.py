@@ -96,7 +96,7 @@ def get_category_kelly_cap(category, user_caps=None):
     return caps.get(category, caps.get("other", 0.10))
 
 
-def dynamic_min_edge(price_cents, fee_per_contract=0.07, base_min_edge=1.0):
+def dynamic_min_edge(price_cents, fee_per_contract=0.07, base_min_edge=3.0):
     """Dynamic fee-drag minimum edge: 2 * fee / price + base%.
 
     At low prices, fee drag is large (e.g., 7c fee on 10c contract = 140%).
@@ -107,7 +107,8 @@ def dynamic_min_edge(price_cents, fee_per_contract=0.07, base_min_edge=1.0):
     """
     if price_cents <= 0:
         return 99.0
-    fee_drag_pct = (2 * fee_per_contract * 100) / price_cents
+    price_dollars = price_cents / 100.0
+    fee_drag_pct = (2 * fee_per_contract) / price_dollars * 100
     return fee_drag_pct + base_min_edge
 
 
