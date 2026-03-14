@@ -1,16 +1,21 @@
 # Secrets and config with real values
 kalshi-config.json
-kalshi-agent/kalshi-config.json
+kalshi-config.local.json
 .env
 .env.*
 !.env.example
+!.store.env.example
 
-# Key files
+# Key files -- never track private keys
+*.pem
 *.key
 *.key.txt
 your-kalshi-key.txt
 
-# Cache files
+# Trade data and caches (operator-specific)
+kalshi-trades.json
+kalshi-calibration.json
+kalshi-weekly-report.txt
 market-matches.json
 
 # Logs
@@ -20,13 +25,16 @@ market-matches.json
 __pycache__/
 *.pyc
 *.pyo
+.venv/
+venv/
 
 # OS
 .DS_Store
 Thumbs.db
 
 # Frontend
-node_modules
+node_modules/
+dist/
 *.local
 test-results/
 playwright-report/

@@ -65,8 +65,36 @@ export default function Profile() {
           </Section>
         )}
 
+        {agentState?.feed_health && (
+          <Section title="FEED HEALTH">
+            {Object.entries(agentState.feed_health).map(([venue, info]: [string, any]) => (
+              <div key={venue} className="px-2 py-1.5 flex items-center justify-between">
+                <span className="text-xs text-text-secondary">{venue}</span>
+                <div className="flex items-center gap-2">
+                  <span className={`inline-block w-2 h-2 rounded-full ${
+                    info.status === "healthy" ? "bg-accent-green" :
+                    info.status === "degraded" ? "bg-accent-gold animate-pulse" :
+                    "bg-text-tertiary"
+                  }`} />
+                  <span className={`text-[10px] font-bold ${
+                    info.status === "healthy" ? "text-accent-green" :
+                    info.status === "degraded" ? "text-accent-gold" :
+                    "text-text-tertiary"
+                  }`}>
+                    [{info.status?.toUpperCase() || "UNKNOWN"}]
+                  </span>
+                  {info.errors > 0 && (
+                    <span className="text-[10px] text-accent-red">{info.errors} err</span>
+                  )}
+                </div>
+              </div>
+            ))}
+            <Row label="stale_markets" value={String(agentState.stale_markets ?? 0)} />
+          </Section>
+        )}
+
         <Section title="ABOUT">
-          <Row label="version" value="v6 cross-platform-arb" />
+          <Row label="version" value="v7 hardened" />
           <Row label="dashboard" value="localhost:9000" />
         </Section>
       </div>

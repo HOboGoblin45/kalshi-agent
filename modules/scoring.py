@@ -1,22 +1,58 @@
-"""Market scoring, filtering, and Kelly criterion position sizing."""
+"""Market scoring, filtering, feature extraction, and Kelly criterion sizing."""
 import datetime
+from decimal import Decimal, ROUND_DOWN
 
 from modules.config import CFG, log
+from modules.precision import to_decimal, MONEY_PLACES
 
 
 def kelly(prob_pct, price_cents, bankroll, max_bet, fee, fraction=0.20):
-    p = prob_pct / 100.0; price = price_cents / 100.0
-    win_payoff = (1.0 - price) - fee; lose_cost = price + fee
-    if win_payoff <= 0: return 0, 0
+    """Kelly criterion position sizing with fee-aware EV.
+
+    All internal math uses Decimal to avoid float rounding errors.
+    Returns (contracts: int, cost: float) for backward compat.
+    """
+    p = to_decimal(prob_pct) / 100
+    price = to_decimal(price_cents) / 100  # dollars per contract
+    fee_d = to_decimal(fee)
+    bankroll_d = to_decimal(bankroll)
+    max_bet_d = to_decimal(max_bet)
+    frac = to_decimal(fraction)
+
+    # Win payoff: $1 - price - 2x fee (entry + exit taker fee)
+    win_payoff = Decimal("1") - price - fee_d * 2
+    # Lose cost: price + entry fee (no exit fee needed -- contract expires worthless)
+    lose_cost = price + fee_d
+
+    if win_payoff <= 0:
+        return 0, 0.0
+
     ev = p * win_payoff - (1 - p) * lose_cost
-    if ev <= 0: return 0, 0
-    b = win_payoff / lose_cost; q = 1 - p
-    kf = max(0, ((b * p - q) / b) * fraction) if b > 0 else 0
-    bet = min(kf * bankroll, max_bet)
-    total_per = price + fee
-    contracts = max(1, int(bet / total_per)) if bet >= total_per else 0
-    while contracts > 0 and contracts * total_per > max_bet: contracts -= 1
-    return contracts, round(contracts * price, 2)
+    if ev <= 0:
+        return 0, 0.0
+
+    # Kelly fraction: f* = (bp - q) / b
+    b = win_payoff / lose_cost
+    q = 1 - p
+    if b <= 0:
+        return 0, 0.0
+    kf = max(Decimal("0"), ((b * p - q) / b) * frac)
+
+    bet = min(kf * bankroll_d, max_bet_d)
+    total_per = price + fee_d  # cost per contract to enter
+    if total_per <= 0 or bet < total_per:
+        return 0, 0.0
+
+    contracts = int((bet / total_per).to_integral_value(rounding=ROUND_DOWN))
+    contracts = max(1, contracts)
+    # Ensure we don't exceed max bet
+    while contracts > 0 and contracts * total_per > max_bet_d:
+        contracts -= 1
+    if contracts <= 0:
+        return 0, 0.0
+
+    cost = float((contracts * price).quantize(MONEY_PLACES))
+    return contracts, cost
 
 
 def calc_hours_left(m):
@@ -45,51 +81,149 @@ def _count_parlay_legs(m):
     title = m.get("title") or ""
     if not title:
         return 1
-    # Parlay titles are comma-separated legs starting with yes/no
     legs = [l.strip() for l in title.split(",") if l.strip()]
     if len(legs) <= 1:
         return 1
-    # Verify they look like parlay legs (start with yes/no)
     parlay_legs = sum(1 for l in legs if l.lower().startswith(("yes ", "no ")))
     return max(1, parlay_legs) if parlay_legs >= 2 else 1
 
 
-def score_market(m):
-    s = 0; vol = m.get("volume", 0) or 0
+# ── Feature Extraction ──
+
+def extract_features(m):
+    """Extract a feature dict from a market for scoring and analysis.
+
+    Separates feature extraction from scoring so features can be used
+    by calibration, debugging, and dashboard independently.
+    """
+    vol = m.get("volume", 0) or 0
     yc = _best_price(m) or 50
-    hrs = m.get("_hrs_left", 9999); cat = m.get("_category", "other")
-
-    if vol >= 1000: s += 4
-    elif vol >= 500: s += 3
-    elif vol >= 100: s += 2
-    elif vol >= 20: s += 1
-
-    if 25 <= yc <= 75: s += 3
-    elif 15 <= yc <= 85: s += 2
-    elif 8 <= yc <= 92: s += 1
-
-    if 1 <= hrs <= 6: s += 6
-    elif 6 < hrs <= 12: s += 5
-    elif 12 < hrs <= 24: s += 4
-    elif 24 < hrs <= 48: s += 2
-    elif 48 < hrs <= 72: s += 1
-
-    if cat in ("weather", "fed_rates", "inflation", "employment"): s += 3
-    elif cat in ("energy", "policy", "sports", "crypto"): s += 2
-    elif cat in ("gdp_growth", "markets"): s += 1
-
-    if vol < 10: s -= 1
-    if yc <= 15 or yc >= 85: s += 2
-    if hrs <= 12 and (yc >= 85 or yc <= 15): s += 2
-
-    # Penalize multi-leg parlays: each extra leg compounds losing probability
+    hrs = m.get("_hrs_left", 9999)
+    cat = m.get("_category", "other")
     legs = _count_parlay_legs(m)
-    if legs >= 6: s -= 5       # 6+ legs = near-impossible, heavily penalize
-    elif legs >= 4: s -= 3     # 4-5 legs = very unlikely
-    elif legs >= 2: s -= 1     # 2-3 legs = mild penalty
-    m["_parlay_legs"] = legs
 
+    # Liquidity quality: ratio of volume to a reasonable threshold
+    liquidity_score = min(4, int(vol / 250))  # 0-4 scale
+
+    # Price informativeness: how much room for edge (extreme prices = more edge potential)
+    if 25 <= yc <= 75:
+        price_score = 3
+    elif 15 <= yc <= 85:
+        price_score = 2
+    elif 8 <= yc <= 92:
+        price_score = 1
+    else:
+        price_score = 0
+
+    # Time urgency: closer to expiry = higher urgency
+    if 1 <= hrs <= 6:
+        time_score = 6
+    elif 6 < hrs <= 12:
+        time_score = 5
+    elif 12 < hrs <= 24:
+        time_score = 4
+    elif 24 < hrs <= 48:
+        time_score = 2
+    elif 48 < hrs <= 72:
+        time_score = 1
+    else:
+        time_score = 0
+
+    # Category data availability bonus
+    data_rich_cats = {"weather", "fed_rates", "inflation", "employment"}
+    moderate_cats = {"energy", "policy", "sports", "crypto"}
+    if cat in data_rich_cats:
+        cat_score = 3
+    elif cat in moderate_cats:
+        cat_score = 2
+    elif cat in ("gdp_growth", "markets"):
+        cat_score = 1
+    else:
+        cat_score = 0
+
+    # Parlay penalty
+    if legs >= 6:
+        parlay_penalty = -5
+    elif legs >= 4:
+        parlay_penalty = -3
+    elif legs >= 2:
+        parlay_penalty = -1
+    else:
+        parlay_penalty = 0
+
+    # Asymmetric opportunity: cheap contracts near expiry with data
+    asymmetric_bonus = 0
+    if (yc <= 15 or yc >= 85):
+        asymmetric_bonus += 2
+    if hrs <= 12 and (yc >= 85 or yc <= 15):
+        asymmetric_bonus += 2
+
+    # Thin market penalty
+    thin_penalty = -1 if vol < 10 else 0
+
+    features = {
+        "price_cents": yc,
+        "volume": vol,
+        "hours_left": hrs,
+        "category": cat,
+        "parlay_legs": legs,
+        "liquidity_score": liquidity_score,
+        "price_score": price_score,
+        "time_score": time_score,
+        "cat_score": cat_score,
+        "parlay_penalty": parlay_penalty,
+        "asymmetric_bonus": asymmetric_bonus,
+        "thin_penalty": thin_penalty,
+        # Quality flags
+        "is_thin": vol < 10,
+        "is_expiring_soon": 0 < hrs <= 6,
+        "is_deep_otm": yc <= 10 or yc >= 90,
+        "is_parlay": legs >= 2,
+        "has_data_source": cat in data_rich_cats,
+    }
+    return features
+
+
+def score_market(m):
+    """Score a market for scan priority using extracted features."""
+    features = extract_features(m)
+    s = (features["liquidity_score"]
+         + features["price_score"]
+         + features["time_score"]
+         + features["cat_score"]
+         + features["parlay_penalty"]
+         + features["asymmetric_bonus"]
+         + features["thin_penalty"])
+
+    m["_parlay_legs"] = features["parlay_legs"]
+    m["_features"] = features
     return s
+
+
+# ── Execution Eligibility ──
+
+def is_execution_eligible(m, features=None):
+    """Determine if a market is eligible for automated execution.
+
+    Returns (eligible: bool, reason: str).
+    Separate from scoring -- a high-scoring market may still not be
+    safe to trade if liquidity or data quality is poor.
+    """
+    if features is None:
+        features = extract_features(m)
+
+    # Hard filters
+    if features["is_thin"] and features["volume"] < 5:
+        return False, "Extremely thin market (<5 volume)"
+
+    if features["parlay_legs"] >= 4:
+        return False, f"Too many parlay legs ({features['parlay_legs']})"
+
+    if features["hours_left"] < 0.25:  # < 15 minutes
+        return False, "Too close to expiry (<15min)"
+
+    # Soft warning: still eligible but flagged
+    return True, "OK"
 
 
 def filter_and_rank(markets):

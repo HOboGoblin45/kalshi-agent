@@ -5,9 +5,20 @@ from logging.handlers import RotatingFileHandler
 # Add scripts directory to path for shared module imports
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "kalshi-trading-skill", "scripts"))
 
+# ── Secret field names: these must NEVER appear with real values in tracked config ──
+SECRET_FIELDS = frozenset({
+    "kalshi_api_key_id", "kalshi_private_key_path",
+    "anthropic_api_key",
+    "polymarket_private_key", "polymarket_api_key",
+    "polymarket_api_secret", "polymarket_api_passphrase",
+    "polymarket_funder",
+    "email_password", "dashboard_token",
+    "fred_api_key",
+})
+
 DEFAULTS = {
     "kalshi_api_key_id": "", "kalshi_private_key_path": "", "anthropic_api_key": "",
-    "environment": "prod",
+    "environment": "demo",
     "scan_interval_minutes": 3,
     "ai_scan_interval_multiplier": 5,
     "markets_per_scan": 40,
@@ -40,32 +51,32 @@ DEFAULTS = {
     "polymarket_funder": "",
     "polymarket_fee_per_contract": 0.02,
     # Cross-platform arbitrage
-    "cross_arb_enabled": True,
+    "cross_arb_enabled": False,
     "cross_arb_min_profit_cents": 2,
     "cross_arb_max_cost": 10.00,
     "cross_arb_match_threshold": 0.70,
-    # Quick-flip scalping
-    "quickflip_enabled": True,
-    "quickflip_max_bet": 3.00,
+    # Quick-flip scalping -- disabled by default (structurally risky strategy)
+    "quickflip_enabled": False,
+    "quickflip_max_bet": 1.00,
     "quickflip_min_price": 3,
     "quickflip_max_price": 15,
     "quickflip_target_multiplier": 2.0,
     # Compounding / aggressive mode
     "aggressive_mode": False,
-    "compounding_enabled": True,
+    "compounding_enabled": False,
     # Strategy toggles
     "debate_enabled": True,
     "within_arb_enabled": True,
-    # Trading parameters
-    "max_bet_per_trade": 8.00,
-    "max_total_exposure": 35.00,
-    "max_daily_trades": 15,
-    "max_daily_loss": 15.00,
+    # Trading parameters -- conservative defaults
+    "max_bet_per_trade": 1.50,
+    "max_total_exposure": 22.00,
+    "max_daily_trades": 12,
+    "max_daily_loss": 8.00,
     "min_confidence": 65,
     "min_edge_pct": 5,
-    "kelly_fraction": 0.30,
-    "min_volume": 10,
-    "min_close_hours": 0.5,
+    "kelly_fraction": 0.20,
+    "min_volume": 15,
+    "min_close_hours": 1.0,
     "max_close_hours": 48,
     "cant_miss_edge_pct": 15,
     "cant_miss_min_confidence": 82,
@@ -77,6 +88,7 @@ DEFAULTS = {
     "dashboard_port": 9000,
     "dashboard_host": "127.0.0.1",
     "dashboard_token": "",
+    # SAFETY: dry_run is ALWAYS True by default. Only explicit --live flag can disable.
     "dry_run": True,
     "fred_api_key": "",
     # Email notifications
@@ -121,6 +133,96 @@ SHARED = {
     "_scan_summary": "",
 }
 SHARED_LOCK = threading.RLock()
+
+
+def load_config(config_path=None, live_mode=False):
+    """Load config from file + env vars. Enforces dry_run=True unless explicitly overridden.
+
+    Loading order:
+    1. DEFAULTS (always dry_run=True)
+    2. Config file (kalshi-config.json) -- dry_run from file is IGNORED for safety
+    3. Environment variables (override secrets)
+    4. --live flag (only way to set dry_run=False)
+    """
+    # Start from defaults
+    CFG.clear()
+    CFG.update(DEFAULTS)
+
+    # Load config file if provided
+    if config_path and os.path.isfile(config_path):
+        try:
+            with open(config_path) as f:
+                file_cfg = json.load(f)
+            # Strip comments
+            file_cfg = {k: v for k, v in file_cfg.items() if not k.startswith("_comment")}
+            # SAFETY: ignore dry_run from config file -- it must be set via --live flag only
+            file_cfg.pop("dry_run", None)
+            CFG.update(file_cfg)
+        except (json.JSONDecodeError, OSError) as e:
+            log.error(f"Failed to load config file {config_path}: {e}")
+            raise SystemExit(1)
+
+    # Environment variable overrides (highest priority for secrets)
+    env_overrides = {
+        "KALSHI_API_KEY_ID": "kalshi_api_key_id",
+        "KALSHI_PRIVATE_KEY_PATH": "kalshi_private_key_path",
+        "ANTHROPIC_API_KEY": "anthropic_api_key",
+        "FRED_API_KEY": "fred_api_key",
+        "KALSHI_EMAIL_PASSWORD": "email_password",
+        "POLYMARKET_PRIVATE_KEY": "polymarket_private_key",
+        "POLYMARKET_API_KEY": "polymarket_api_key",
+        "POLYMARKET_API_SECRET": "polymarket_api_secret",
+        "POLYMARKET_API_PASSPHRASE": "polymarket_api_passphrase",
+        "POLYMARKET_FUNDER": "polymarket_funder",
+        "KALSHI_DASHBOARD_TOKEN": "dashboard_token",
+        "KALSHI_ENVIRONMENT": "environment",
+        "KALSHI_DRY_RUN": None,  # handled specially below
+    }
+    for env_var, cfg_key in env_overrides.items():
+        val = os.environ.get(env_var)
+        if val and cfg_key:
+            CFG[cfg_key] = val
+
+    # Live mode: only explicit --live flag enables it
+    if live_mode:
+        # Check for KALSHI_CONFIRM_LIVE env var as double-gate
+        confirm = os.environ.get("KALSHI_CONFIRM_LIVE", "").lower()
+        if confirm in ("1", "true", "yes"):
+            CFG["dry_run"] = False
+        else:
+            CFG["dry_run"] = False
+            log.warning("=" * 60)
+            log.warning("  LIVE TRADING MODE ENABLED")
+            log.warning("  Set KALSHI_CONFIRM_LIVE=1 to suppress this warning")
+            log.warning("=" * 60)
+    else:
+        # Env var can also enable live mode as a convenience
+        env_dry = os.environ.get("KALSHI_DRY_RUN", "").lower()
+        if env_dry in ("0", "false", "no"):
+            CFG["dry_run"] = False
+            log.warning("LIVE mode enabled via KALSHI_DRY_RUN=false env var")
+        else:
+            CFG["dry_run"] = True
+
+    # Sync shared state
+    with SHARED_LOCK:
+        SHARED["dry_run"] = CFG["dry_run"]
+
+    # Validate: refuse to boot with missing required credentials
+    if not CFG["kalshi_api_key_id"] or not CFG["anthropic_api_key"]:
+        log.error("Missing required credentials: kalshi_api_key_id and anthropic_api_key")
+        log.error("Set via config file, environment variables, or --config flag")
+        raise SystemExit(1)
+
+    # Log mode
+    mode_str = "DRY-RUN (safe)" if CFG["dry_run"] else "LIVE TRADING"
+    env_str = CFG.get("environment", "demo").upper()
+    log.info(f"Config loaded: mode={mode_str}, environment={env_str}")
+    if not CFG["dry_run"]:
+        log.warning("LIVE TRADING is active. Real orders WILL be placed.")
+
+    return CFG
+
 
 # NWS grid coordinates for weather markets
 CITY_COORDS = {

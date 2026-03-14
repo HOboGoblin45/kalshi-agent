@@ -5,10 +5,18 @@ from urllib.parse import unquote
 import hmac
 
 from modules.config import CFG, SHARED, SHARED_LOCK, log
+from modules.market_state import MARKET_STATE
+from modules.calibration import CalibrationTracker
 
 # Resolve the dist/ directory (built React app)
+# Works in both dev (source tree) and packaged (Electron asar) environments
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DIST_DIR = os.path.join(_BASE_DIR, "dist")
+if not os.path.isdir(_DIST_DIR):
+    # Fallback: check relative to cwd (packaged mode may set cwd differently)
+    _alt = os.path.join(os.getcwd(), "dist")
+    if os.path.isdir(_alt):
+        _DIST_DIR = _alt
 
 MIME_TYPES = {
     ".html": "text/html",
@@ -68,6 +76,7 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
         if self.path == '/api/markets': return self._json(self._markets())
         if self.path == '/api/positions': return self._json(self._positions())
         if self.path == '/api/trades': return self._json(self._trades())
+        if self.path == '/api/calibration': return self._json(self._calibration())
 
         # Serve built React app from dist/
         if os.path.isdir(_DIST_DIR):
@@ -153,9 +162,11 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
     def _state(self):
         risk = SHARED.get("_risk_summary", {"total": 0, "wins": 0, "losses": 0, "win_rate": "--",
             "wagered": "$0", "day_trades": 0, "day_pnl": "$0", "exposure": "$0", "paused": False})
+        # SAFETY: always re-check CFG for canonical dry_run state
+        is_dry_run = CFG.get("dry_run", True)
         return {"enabled": SHARED["enabled"], "status": SHARED["status"], "balance": SHARED["balance"],
             "poly_balance": SHARED.get("poly_balance", 0), "poly_enabled": SHARED.get("poly_enabled", False),
-            "dry_run": SHARED.get("dry_run", CFG.get("dry_run", True)),
+            "dry_run": is_dry_run,
             "environment": CFG["environment"].upper(), "risk": risk, "trades": SHARED.get("_trades", [])[-20:],
             "log": SHARED["log_lines"][-100:], "last_scan": SHARED["last_scan"], "next_scan": SHARED["next_scan"],
             "max_daily": CFG["max_daily_trades"], "scan_count": SHARED["scan_count"],
@@ -165,7 +176,9 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
             "cross_arb_opps": SHARED.get("_cross_arb_opportunities", 0),
             "quickflip_active": SHARED.get("_quickflip_active", 0),
             "scan_progress": SHARED.get("_scan_progress", {"phase": "idle", "step": "", "pct": 0, "total_phases": 0, "current_phase": 0}),
-            "scan_summary": SHARED.get("_scan_summary", "")}
+            "scan_summary": SHARED.get("_scan_summary", ""),
+            "feed_health": MARKET_STATE.feed_status(),
+            "stale_markets": len(MARKET_STATE.stale_tickers())}
 
     def _markets(self):
         return SHARED.get("_cached_markets", [])
@@ -175,6 +188,14 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
 
     def _trades(self):
         return SHARED.get("_trades", [])
+
+    def _calibration(self):
+        try:
+            tracker = CalibrationTracker()
+            return tracker.summary()
+        except Exception:
+            return {"total_predictions": 0, "resolved": 0, "pending": 0,
+                    "overall_brier": 0.25, "overall_log_loss": 1.0, "category_stats": {}}
 
     def log_message(self, *a):
         pass

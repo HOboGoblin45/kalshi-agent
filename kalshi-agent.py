@@ -22,19 +22,23 @@ Key innovations over v5:
 import os, sys, json, time, datetime, argparse, traceback, threading
 
 # ── Module imports ──
-from modules.config import CFG, SHARED, SHARED_LOCK, log, parse_orderbook_price
+from modules.config import CFG, SHARED, SHARED_LOCK, log, parse_orderbook_price, load_config
 from modules.apis import KalshiAPI, MarketCache, PolymarketAPI, PolymarketCache
 from modules.data_fetcher import DataFetcher
 from modules.notifier import Notifier, PerformanceReporter
 from modules.risk import RiskMgr, ExitManager
 from modules.debate import DebateEngine
-from modules.scoring import kelly, calc_hours_left, score_market, filter_and_rank
+from modules.scoring import kelly, calc_hours_left, score_market, filter_and_rank, is_execution_eligible
+from modules.calibration import CalibrationTracker
+from modules.execution import build_execution_plan, should_quickflip, MakerOrderManager
+from modules.market_state import MARKET_STATE
 from modules.arbitrage import (
     match_markets, scan_cross_platform_arbitrage, execute_cross_arb,
     scan_arbitrage, _best_ask, _estimate_slippage, route_order, get_best_price,
     find_quickflip_candidates, get_bankroll_tier, get_dynamic_kelly, BANKROLL_TIERS,
 )
 from modules.dashboard import start_dashboard
+from modules.ws_feed import KalshiWSFeed
 
 
 # ════════════════════════════════════════
@@ -45,6 +49,7 @@ class Agent:
         self.api = KalshiAPI(); self.debate = DebateEngine()
         self.risk = RiskMgr(); self.cache = MarketCache(self.api)
         self.data = DataFetcher()
+        self.calibration = CalibrationTracker()
         self.notifier = Notifier()
         self.reporter = PerformanceReporter(self.risk, self.notifier)
         self.stop_event = threading.Event()
@@ -66,6 +71,9 @@ class Agent:
                 log.error(f"Polymarket init failed: {e} -- running Kalshi-only")
                 self.poly_enabled = False
         self.exit_mgr = ExitManager(self.api, self.risk, self.notifier, poly_api=self.poly_api)
+        self.maker_mgr = MakerOrderManager(self.api)
+        self.ws_feed = KalshiWSFeed()
+        self._ws_started = False
 
     @staticmethod
     def _clean_title(m):
@@ -182,6 +190,20 @@ class Agent:
         if expired:
             log.info(f"Quick-flip exits: {len(expired)} positions closed, {len(self._quickflip_targets)} still open")
 
+    def _check_calibration_outcomes(self):
+        """Check if any predicted markets have settled and record outcomes."""
+        pending = [r for r in self.calibration.records if r.get("resolved") is None]
+        if not pending:
+            return
+        pending_tickers = list(set(r["ticker"] for r in pending))[:20]  # batch limit
+        try:
+            settlements = self.api.settled_markets(pending_tickers)
+            for tk, resolved_yes in settlements.items():
+                self.calibration.record_outcome(tk, resolved_yes)
+                log.info(f"  Calibration: {tk} resolved {'YES' if resolved_yes else 'NO'}")
+        except Exception as e:
+            log.debug(f"Calibration outcome check failed: {e}")
+
     def _is_ai_scan_due(self):
         mult = CFG.get("ai_scan_interval_multiplier", 5)
         return self._scan_number % mult == 0
@@ -238,6 +260,10 @@ class Agent:
         combined_bal = bal + poly_bal
         log.info(f"Balance: Kalshi ${bal:.2f} | Polymarket ${poly_bal:.2f} | Combined ${combined_bal:.2f}")
         scan_events.append(f"Balance: Kalshi ${bal:.2f} + Polymarket ${poly_bal:.2f} = ${combined_bal:.2f}")
+        # Check calibration outcomes for settled markets
+        self._check_calibration_outcomes()
+        # Manage resting maker orders (cancel stale, reprice)
+        self.maker_mgr.check_and_manage()
         if combined_bal < 1:
             SHARED["status"] = "Low balance"
             scan_events.append("Scan aborted: combined balance below $1")
@@ -296,6 +322,13 @@ class Agent:
                 log.error(f"Polymarket market load failed: {e}")
         for m in mkts:
             if "platform" not in m: m["platform"] = "kalshi"
+
+        # ── START WEBSOCKET FEED (first scan only) ──
+        if not self._ws_started and all_scored:
+            ws_tickers = [m["ticker"] for m in all_scored[:30] if m.get("ticker")]
+            if ws_tickers:
+                self.ws_feed.start(ws_tickers)
+                self._ws_started = True
 
         # ── PRE-FETCH LIVE DATA ──
         self._update_progress(0, "Initializing", "Fetching live data...", total_phases)
@@ -425,6 +458,11 @@ class Agent:
                 if qf_candidates:
                     for qf in qf_candidates[:3]:
                         m = qf["market"]
+                        # Execution policy check for quickflip
+                        qf_ok, qf_reason = should_quickflip(m)
+                        if not qf_ok:
+                            log.info(f"  QF BLOCKED: {m.get('title', '')[:40]} -- {qf_reason}")
+                            continue
                         log.info(f"  QF: {m.get('title', '')[:40]} -- {qf['side']} @{qf['entry_price']}c target:{qf['target_price']}c ROI:{qf['potential_roi']:.0f}%")
                         qf_max = CFG.get("quickflip_max_bet", 3.0)
                         if qf_max > 0:
@@ -561,6 +599,8 @@ class Agent:
             if poly_match and self.poly_api:
                 try:
                     ob = self.api.orderbook(tk)
+                    MARKET_STATE.update_book(tk, ob, source="rest")
+                    MARKET_STATE.record_feed_success("kalshi")
                     book = ob.get("orderbook", {})
                     yb = book.get("yes", book.get("yes_dollars", []))
                     nb = book.get("no", book.get("no_dollars", []))
@@ -571,21 +611,26 @@ class Agent:
                             ob_spread = int(by + bn - 100) if by + bn > 100 else int(100 - by - bn)
                             log.info(f"  Orderbook (Kalshi): YES={by}c NO={bn}c spread={ob_spread}c")
                 except Exception as e:
+                    MARKET_STATE.record_feed_error("kalshi")
                     log.debug(f"  Kalshi orderbook error: {e}")
                 try:
                     p_token = poly_match.get("token_id", "")
                     if p_token:
                         p_ob = self.poly_api.orderbook(p_token)
+                        MARKET_STATE.record_feed_success("polymarket")
                         p_book = p_ob.get("orderbook", {})
                         p_yes = p_book.get("yes", [])
                         if p_yes:
                             p_yes_price = _best_ask(p_yes)
                             log.info(f"  Orderbook (Polymarket): YES={p_yes_price}c")
                 except Exception as e:
+                    MARKET_STATE.record_feed_error("polymarket")
                     log.debug(f"  Polymarket orderbook error: {e}")
             else:
                 try:
                     ob = self.api.orderbook(tk)
+                    MARKET_STATE.update_book(tk, ob, source="rest")
+                    MARKET_STATE.record_feed_success("kalshi")
                     book = ob.get("orderbook", {})
                     yb = book.get("yes", book.get("yes_dollars", []))
                     nb = book.get("no", book.get("no_dollars", []))
@@ -598,6 +643,7 @@ class Agent:
                         else:
                             log.debug(f"  Orderbook: invalid prices for {tk}")
                 except Exception as e:
+                    MARKET_STATE.record_feed_error("kalshi")
                     log.debug(f"  Orderbook fetch error for {tk}: {e}")
 
             if ob_spread > 25:
@@ -673,6 +719,11 @@ class Agent:
             log.info(f"  Kelly: {contracts}x {r['side']} @{bp}c = ${cost:.2f} +${fees:.2f}fee {platform_tag}")
             log.info(f"  If correct: ${net_profit:.2f} net ({roi_pct:.0f}% ROI)")
 
+            # Check execution eligibility (liquidity, parlay legs, expiry)
+            eligible, elig_reason = is_execution_eligible(mkt)
+            if not eligible:
+                log.info(f"  -> INELIGIBLE: {elig_reason}"); continue
+
             ok, reason = self.risk.check(total, r["confidence"], abs(r["edge"]))
             if not ok: log.info(f"  -> BLOCKED: {reason}"); continue
             if net_profit <= 0: log.info("  -> SKIP: not profitable after fees"); continue
@@ -681,12 +732,27 @@ class Agent:
                 log.info(f"  -> SKIP: edge {r['edge']}% too small vs spread {ob_spread}c")
                 continue
 
+            # Execution policy: taker vs maker vs no_trade
+            book_state = MARKET_STATE.get_book(tk)
+            exec_plan = build_execution_plan(
+                ticker=tk, side=side_lower, probability=r["probability"],
+                confidence=r["confidence"], edge_pct=abs(r["edge"]),
+                price_cents=bp, contracts=contracts, hours_left=hrs,
+                platform=trade_platform, book=book_state)
+            if exec_plan.action == "no_trade":
+                log.info(f"  -> NO_TRADE: {exec_plan.reason}"); continue
+            # Use execution plan's price and log the decision
+            bp = exec_plan.price_cents
+            log.info(f"  Execution: {exec_plan.action} @ {bp}c (edge_after_fees={exec_plan.edge_after_fees_pct:.1f}%, urgency={exec_plan.urgency})")
+
             log.info(f"  * EXECUTE: BUY {r['side'].upper()} {contracts}x {tk} @{bp}c [{cat}] on {trade_platform.upper()}")
             scan_events.append(f"TRADE: BUY {r['side']} {contracts}x {tk} @{bp}c on {trade_platform} (conf={r['confidence']}% edge={r['edge']}%)")
             try:
                 if CFG.get("dry_run", True):
-                    log.info("  DRY-RUN: order not sent")
-                    scan_events.append(f"  {tk}: DRY-RUN -- order simulated, not sent")
+                    log.info(f"  DRY-RUN: {exec_plan.action} order not sent")
+                    scan_events.append(f"  {tk}: DRY-RUN -- {exec_plan.action} order simulated, not sent")
+                elif exec_plan.action == "maker" and trade_platform == "kalshi":
+                    self.maker_mgr.place_maker_order(tk, side_lower, contracts, bp)
                 else:
                     if trade_platform == "kalshi":
                         res = self.api.place_order(tk, side_lower, contracts, bp)
@@ -700,6 +766,11 @@ class Agent:
                 self.risk.record(tk, mkt.get("title", ""), side_lower, contracts, bp,
                     r["confidence"], r["edge"], r["evidence"], r["bull_prob"], r["bear_prob"],
                     probability=r["probability"], platform=trade_platform)
+                self.calibration.record_prediction(
+                    ticker=tk, side=r["side"], probability=r["probability"],
+                    confidence=r["confidence"], market_price=bp, edge=r["edge"],
+                    category=cat, bull_prob=r["bull_prob"], bear_prob=r["bear_prob"],
+                    debate_spread=r.get("debate_spread", 0))
                 self.notifier.notify_trade({"ticker": tk, "title": mkt.get("title", ""),
                     "side": r["side"], "contracts": contracts, "price_cents": bp, "cost": cost,
                     "edge": r["edge"], "confidence": r["confidence"],
@@ -758,48 +829,29 @@ class Agent:
                 except KeyboardInterrupt: raise
         finally:
             self.stop_event.set()
+            self.ws_feed.stop()
 
 
 def main():
     ap = argparse.ArgumentParser(description="Kalshi AI Agent v6 -- Cross-Platform Arbitrage")
-    ap.add_argument("--config", type=str)
+    ap.add_argument("--config", type=str, help="Path to config JSON file")
     ap.add_argument("--scan-once", action="store_true"); ap.add_argument("--no-dashboard", action="store_true")
     ap.add_argument("--report", action="store_true", help="Generate performance report and exit")
     mode = ap.add_mutually_exclusive_group()
-    mode.add_argument("--dry-run", action="store_true", help="Never place live orders")
-    mode.add_argument("--live", action="store_true", help="Allow live order placement")
+    mode.add_argument("--dry-run", action="store_true", help="Force dry-run mode (default)")
+    mode.add_argument("--live", action="store_true", help="Enable live order placement (requires explicit intent)")
     args = ap.parse_args()
-    if args.config:
-        with open(args.config) as f: CFG.update(json.load(f))
-    env_overrides = {
-        "KALSHI_API_KEY_ID": "kalshi_api_key_id",
-        "ANTHROPIC_API_KEY": "anthropic_api_key",
-        "FRED_API_KEY": "fred_api_key",
-        "KALSHI_EMAIL_PASSWORD": "email_password",
-        "POLYMARKET_PRIVATE_KEY": "polymarket_private_key",
-        "POLYMARKET_API_KEY": "polymarket_api_key",
-        "POLYMARKET_API_SECRET": "polymarket_api_secret",
-        "POLYMARKET_API_PASSPHRASE": "polymarket_api_passphrase",
-        "POLYMARKET_FUNDER": "polymarket_funder",
-    }
-    for env_var, cfg_key in env_overrides.items():
-        val = os.environ.get(env_var)
-        if val: CFG[cfg_key] = val
-    if args.dry_run:
-        CFG["dry_run"] = True
-    elif args.live:
-        CFG["dry_run"] = False
-    else:
-        CFG["dry_run"] = bool(CFG.get("dry_run", True))
-    with SHARED_LOCK:
-        SHARED["dry_run"] = CFG["dry_run"]
-    log.info(f"Trading mode: {'DRY-RUN' if CFG['dry_run'] else 'LIVE'}")
-    if not CFG["kalshi_api_key_id"] or not CFG["anthropic_api_key"]:
-        print("\n  Error: --config with API keys required (or set KALSHI_API_KEY_ID / ANTHROPIC_API_KEY env vars)\n"); sys.exit(1)
+
+    # Use centralized config loader with safe defaults
+    # dry_run from config file is IGNORED -- only --live flag can enable live trading
+    live_mode = args.live and not args.dry_run
+    load_config(config_path=args.config, live_mode=live_mode)
+
     # Auto-enable Polymarket if keys are provided
     if CFG.get("polymarket_private_key") and not CFG.get("polymarket_enabled"):
         CFG["polymarket_enabled"] = True
         log.info("Polymarket auto-enabled (private key detected)")
+
     a = Agent()
     try:
         if args.report:

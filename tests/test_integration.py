@@ -337,5 +337,95 @@ class TestMarketFilterPipeline(unittest.TestCase):
                 self.assertGreater(temp["_score"], 5)
 
 
+# ═══════════════════════════════════════
+# INTEGRATION: PRODUCTION MODULE PIPELINE
+# ═══════════════════════════════════════
+
+class TestProductionMarketStateIntegration(unittest.TestCase):
+    """Test MARKET_STATE population from orderbook data."""
+
+    def setUp(self):
+        from modules.market_state import MarketStateStore
+        self.store = MarketStateStore()
+
+    def test_rest_orderbook_populates_store(self):
+        raw = {"orderbook": {"yes": [["0.4500", "10"]], "no": [["0.5000", "8"]]}}
+        book = self.store.update_book("INT-MKT-1", raw, source="rest")
+        self.assertEqual(book.ticker, "INT-MKT-1")
+        self.assertFalse(book.is_stale)
+        self.assertTrue(len(book.yes_bids) > 0)
+
+    def test_feed_health_degrades_on_error(self):
+        self.store.record_feed_success("kalshi")
+        self.store.record_feed_error("kalshi")
+        status = self.store.feed_status()
+        self.assertEqual(status["kalshi"]["status"], "degraded")
+
+
+class TestProductionExecutionPipeline(unittest.TestCase):
+    """Test production scoring -> eligibility -> execution plan flow."""
+
+    def test_full_pipeline(self):
+        from modules.scoring import extract_features, is_execution_eligible
+        from modules.execution import build_execution_plan
+
+        market = {
+            "ticker": "PIPE-1", "title": "Will it rain?",
+            "volume": 200, "display_price": 50,
+            "_hrs_left": 24, "_category": "weather",
+        }
+        features = extract_features(market)
+        self.assertFalse(features["is_thin"])
+
+        eligible, _ = is_execution_eligible(market, features)
+        self.assertTrue(eligible)
+
+        plan = build_execution_plan(
+            ticker="PIPE-1", side="yes", probability=70, confidence=75,
+            edge_pct=15.0, price_cents=50, contracts=2, hours_left=24,
+        )
+        self.assertIn(plan.action, ("taker", "maker", "no_trade"))
+
+    def test_fee_drag_blocks_expensive_contract(self):
+        from modules.scoring import kelly as prod_kelly
+        contracts, cost = prod_kelly(95, 90, 100, 10, 0.07, 0.20)
+        self.assertEqual(contracts, 0, "90c contract should be blocked by fee drag")
+
+
+class TestProductionCalibrationPipeline(unittest.TestCase):
+    """Test calibration prediction -> outcome -> metrics pipeline."""
+
+    def test_prediction_to_brier(self):
+        import tempfile, os
+        from modules.calibration import CalibrationTracker
+
+        with tempfile.NamedTemporaryFile(suffix='.json', delete=False, mode='w') as f:
+            f.write('[]')
+            path = f.name
+        try:
+            t = CalibrationTracker(log_path=path)
+            t.record_prediction(ticker="C1", side="YES", probability=80,
+                                confidence=75, market_price=50, edge=15.0, category="weather")
+            t.record_outcome("C1", resolved_yes=True)
+            brier = t.brier_score()
+            self.assertLess(brier, 0.10)
+        finally:
+            os.unlink(path)
+
+
+class TestProductionPrecisionIntegration(unittest.TestCase):
+    """Test precision math with fee models."""
+
+    def test_fee_drag_on_expensive(self):
+        from modules.precision import KALSHI_FEES
+        pnl = KALSHI_FEES.net_pnl(90, 100, 1)
+        self.assertLess(float(pnl), 0, "90c contract should lose money after fees")
+
+    def test_cheap_contract_profitable(self):
+        from modules.precision import KALSHI_FEES
+        pnl = KALSHI_FEES.net_pnl(30, 100, 1)
+        self.assertGreater(float(pnl), 0.50)
+
+
 if __name__ == "__main__":
     unittest.main()

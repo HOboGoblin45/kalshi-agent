@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { TrendingUp } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -102,42 +103,71 @@ export default function Positions() {
             -- recent trades ({trades.length}) --
           </div>
           <div className="card p-0 overflow-hidden">
-            <table className="w-full text-[10px]">
-              <thead>
-                <tr className="border-b border-border-subtle">
-                  <th className="text-left px-2 py-1.5 text-text-tertiary uppercase">TIME</th>
-                  <th className="text-left px-2 py-1.5 text-text-tertiary uppercase">MARKET</th>
-                  <th className="text-left px-2 py-1.5 text-text-tertiary uppercase">SIDE</th>
-                  <th className="text-left px-2 py-1.5 text-text-tertiary uppercase">QTY</th>
-                  <th className="text-left px-2 py-1.5 text-text-tertiary uppercase">PRICE</th>
-                  <th className="text-left px-2 py-1.5 text-text-tertiary uppercase">EDGE</th>
-                </tr>
-              </thead>
-              <tbody>
-                {trades
-                  .slice()
-                  .reverse()
-                  .slice(0, 20)
-                  .map((t, i) => (
-                    <tr key={i} className="border-b border-border-subtle/40 hover:bg-bg-elevated">
-                      <td className="px-2 py-1 text-text-tertiary">
-                        {typeof t.time === "string" ? t.time.slice(5, 16) : ""}
-                      </td>
-                      <td className="px-2 py-1 text-accent-green truncate max-w-[220px]">{t.title || t.ticker}</td>
-                      <td className={`px-2 py-1 font-bold ${t.side === "yes" ? "text-accent-green" : "text-accent-red"}`}>
-                        {(t.side || "").toUpperCase()}
-                      </td>
-                      <td className="px-2 py-1 text-text-secondary">{t.contracts}</td>
-                      <td className="px-2 py-1 text-text-secondary">{t.price_cents}c</td>
-                      <td className="px-2 py-1 text-accent-gold">{t.edge}%</td>
-                    </tr>
-                  ))}
-              </tbody>
-            </table>
+            <TradesTable trades={trades} />
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+function TradesTable({ trades }: { trades: any[] }) {
+  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+  const rows = trades.slice().reverse().slice(0, 20);
+
+  return (
+    <table className="w-full text-[10px]">
+      <thead>
+        <tr className="border-b border-border-subtle">
+          <th className="text-left px-2 py-1.5 text-text-tertiary uppercase">TIME</th>
+          <th className="text-left px-2 py-1.5 text-text-tertiary uppercase">MARKET</th>
+          <th className="text-left px-2 py-1.5 text-text-tertiary uppercase">SIDE</th>
+          <th className="text-left px-2 py-1.5 text-text-tertiary uppercase">QTY</th>
+          <th className="text-left px-2 py-1.5 text-text-tertiary uppercase">PRICE</th>
+          <th className="text-left px-2 py-1.5 text-text-tertiary uppercase">EDGE</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((t, i) => (
+          <>
+            <tr
+              key={i}
+              className="border-b border-border-subtle/40 hover:bg-bg-elevated cursor-pointer"
+              onClick={() => setExpandedIdx(expandedIdx === i ? null : i)}
+            >
+              <td className="px-2 py-1 text-text-tertiary">
+                {typeof t.time === "string" ? t.time.slice(5, 16) : ""}
+              </td>
+              <td className="px-2 py-1 text-accent-green truncate max-w-[220px]">{t.title || t.ticker}</td>
+              <td className={`px-2 py-1 font-bold ${t.side === "yes" ? "text-accent-green" : "text-accent-red"}`}>
+                {(t.side || "").toUpperCase()}
+              </td>
+              <td className="px-2 py-1 text-text-secondary">{t.contracts}</td>
+              <td className="px-2 py-1 text-text-secondary">{t.price_cents}c</td>
+              <td className="px-2 py-1 text-accent-gold">{t.edge}%</td>
+            </tr>
+            {expandedIdx === i && (
+              <tr key={`${i}-detail`} className="border-b border-border-subtle/40">
+                <td colSpan={6} className="px-3 py-2 bg-bg-elevated">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-1.5">
+                    <span className="text-text-tertiary">prob: <span className="text-accent-green">{t.probability}%</span></span>
+                    <span className="text-text-tertiary">conf: <span className="text-accent-green">{t.confidence}%</span></span>
+                    <span className="text-text-tertiary">bull: <span className="text-accent-green">{t.bull_prob}%</span></span>
+                    <span className="text-text-tertiary">bear: <span className="text-accent-red">{t.bear_prob}%</span></span>
+                  </div>
+                  {t.evidence && (
+                    <p className="text-[10px] text-text-secondary whitespace-pre-wrap leading-relaxed">{t.evidence}</p>
+                  )}
+                  {!t.evidence && (
+                    <p className="text-[10px] text-text-tertiary italic">no rationale recorded</p>
+                  )}
+                </td>
+              </tr>
+            )}
+          </>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

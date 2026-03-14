@@ -2,6 +2,7 @@
 import os, json, time
 
 from modules.config import CFG, log, parse_orderbook_price
+from modules.market_state import MARKET_STATE
 
 # Import shared implementations from scripts/
 from cross_platform import (
@@ -35,6 +36,45 @@ def _levenshtein_similarity(s1, s2):
 
 def combined_similarity(title1, title2):
     return 0.6 * _jaccard_similarity(title1, title2) + 0.4 * _levenshtein_similarity(title1, title2)
+
+
+def classify_arb_quality(match, k_ob=None, p_ob=None):
+    """Classify an arbitrage opportunity by reliability.
+
+    Returns:
+        "locked": True arbitrage (high confidence match + both legs executable)
+        "soft": Likely mispricing (moderate match confidence, some execution risk)
+        "speculative": Possible disagreement trade (lower match confidence)
+        "unsafe": Should not be traded (stale data, low match quality, etc.)
+    """
+    sim = match.get("similarity", 0)
+    source = match.get("source", "computed")
+
+    # Similarity-based classification
+    if sim >= 0.95 or source == "cache":
+        match_quality = "high"
+    elif sim >= 0.85:
+        match_quality = "medium"
+    elif sim >= 0.70:
+        match_quality = "low"
+    else:
+        return "unsafe", "Match similarity too low"
+
+    # Check for stale book data
+    from modules.market_state import MARKET_STATE
+    km = match.get("kalshi", {})
+    k_ticker = km.get("ticker", "")
+    k_book = MARKET_STATE.get_book(k_ticker)
+    if k_book and k_book.is_stale:
+        return "unsafe", "Kalshi book data is stale"
+
+    # Classification
+    if match_quality == "high":
+        return "locked", "High-confidence semantic match"
+    elif match_quality == "medium":
+        return "soft", "Moderate semantic match -- verify settlement terms"
+    else:
+        return "speculative", "Low match confidence -- manual review recommended"
 
 
 def match_markets(kalshi_markets, poly_markets, threshold=0.70):
@@ -142,18 +182,31 @@ def _best_ask(asks):
 
 
 def scan_cross_platform_arbitrage(matches, kalshi_api, poly_api, fee_kalshi=0.07, fee_poly=0.02):
-    """Scan matched market pairs for cross-platform arbitrage with slippage adjustment."""
+    """Scan matched market pairs for cross-platform arbitrage with slippage adjustment.
+
+    Only labels opportunities as "arbitrage" when match quality is high enough.
+    Lower-quality matches are labeled as "soft_mispricing" for information only.
+    """
     opportunities = []
     target_contracts = max(1, int(CFG.get("cross_arb_max_cost", 10.0) * 100 / 80))
     for match in matches:
         km, pm = match["kalshi"], match["polymarket"]
         if match.get("similarity", 0) < 0.80: continue
+
+        # Classify match quality
+        arb_class, arb_reason = classify_arb_quality(match)
+        if arb_class == "unsafe":
+            log.debug(f"  Cross-arb skip {km.get('ticker', '?')}: {arb_reason}")
+            continue
         try:
             k_ob = kalshi_api.orderbook(km["ticker"])
+            MARKET_STATE.update_book(km["ticker"], k_ob, source="rest")
+            MARKET_STATE.record_feed_success("kalshi")
             k_book = k_ob.get("orderbook", {})
             yes_token = pm.get("token_id", "")
             if not yes_token: continue
             p_ob = poly_api.orderbook(yes_token)
+            MARKET_STATE.record_feed_success("polymarket")
             p_book = p_ob.get("orderbook", {})
             # Strategy 1: YES@Kalshi + NO@Polymarket
             k_yes = k_book.get("yes", []); p_no = p_book.get("no", [])
@@ -195,6 +248,8 @@ def scan_cross_platform_arbitrage(matches, kalshi_api, poly_api, fee_kalshi=0.07
                     "p_price": _best_ask(p_no) if is_s1 else _best_ask(p_yes),
                     "similarity": match.get("similarity", 0),
                     "type": "cross_platform_arbitrage",
+                    "arb_class": arb_class,
+                    "arb_reason": arb_reason,
                 }
                 if slip:
                     opp["slippage_adjusted_profit"] = round(slip.get("avg_profit", best), 1)
@@ -210,7 +265,16 @@ def scan_cross_platform_arbitrage(matches, kalshi_api, poly_api, fee_kalshi=0.07
 
 
 def execute_cross_arb(kalshi_api, poly_api, opp, max_cost=10.0, dry_run=False):
-    """Execute both legs of a cross-platform arb."""
+    """Execute both legs of a cross-platform arb.
+
+    SAFETY: only executes "locked" arb classification by default.
+    Soft/speculative opportunities are logged but not executed.
+    """
+    arb_class = opp.get("arb_class", "speculative")
+    if arb_class not in ("locked",) and not dry_run:
+        log.info(f"  Cross-arb {opp.get('kalshi_ticker', '?')}: skipping live execution (class={arb_class})")
+        return {"success": False, "reason": f"Arb class '{arb_class}' not eligible for live execution"}
+
     cost_per_pair = opp["cost_cents"] / 100.0
     contracts = min(int(max_cost / cost_per_pair) if cost_per_pair > 0 else 0, 20)
     if contracts == 0: return {"success": False, "reason": "Zero contracts"}
@@ -270,44 +334,69 @@ def get_best_price(ticker, kalshi_api, poly_match, poly_api, side, kalshi_fee=0.
 
 
 def scan_arbitrage(api, markets, ob_cache=None):
-    """Check for within-market YES+NO < 100c arbitrage."""
+    """Check for within-market YES+NO < 100c arbitrage.
+
+    Uses MARKET_STATE store for book caching and staleness tracking.
+    """
     opportunities = []
     skipped = 0
     candidates = [m for m in markets if (m.get("volume", 0) or 0) >= 50][:100]
     for m in candidates:
+        tk = m["ticker"]
         try:
-            ob = api.orderbook(m["ticker"])
-            book = ob.get("orderbook", {})
-            yes_bids = book.get("yes", book.get("yes_dollars", []))
-            no_bids = book.get("no", book.get("no_dollars", []))
-            if not yes_bids or not no_bids: continue
-            raw_yes = yes_bids[0][0] if isinstance(yes_bids[0], list) else yes_bids[0]
-            raw_no = no_bids[0][0] if isinstance(no_bids[0], list) else no_bids[0]
-            best_yes = parse_orderbook_price(raw_yes)
-            best_no = parse_orderbook_price(raw_no)
-            if best_yes is None or best_no is None: continue
+            # Check for fresh cached book state first
+            cached_book = MARKET_STATE.get_book_if_fresh(tk)
+            if cached_book:
+                best_yes = cached_book.best_yes_bid
+                best_no = cached_book.best_no_bid
+                if best_yes is None or best_no is None:
+                    continue
+                # Use ob_cache for change detection
+                if ob_cache is not None:
+                    prev = ob_cache.get(tk)
+                    if prev:
+                        _, old_yes, old_no = prev
+                        if old_yes == best_yes and old_no == best_no:
+                            skipped += 1; continue
+                    ob_cache[tk] = (time.time(), best_yes, best_no)
+            else:
+                # Fetch fresh book from API and update state store
+                ob = api.orderbook(tk)
+                book_state = MARKET_STATE.update_book(tk, ob, source="rest")
+                MARKET_STATE.record_feed_success("kalshi")
 
-            if ob_cache is not None:
-                tk = m["ticker"]
-                cached = ob_cache.get(tk)
-                now = time.time()
-                if cached:
-                    ts, old_yes, old_no = cached
-                    if now - ts < 180 and old_yes == best_yes and old_no == best_no:
-                        skipped += 1; continue
-                ob_cache[tk] = (now, best_yes, best_no)
+                book = ob.get("orderbook", {})
+                yes_bids = book.get("yes", book.get("yes_dollars", []))
+                no_bids = book.get("no", book.get("no_dollars", []))
+                if not yes_bids or not no_bids: continue
+                raw_yes = yes_bids[0][0] if isinstance(yes_bids[0], list) else yes_bids[0]
+                raw_no = no_bids[0][0] if isinstance(no_bids[0], list) else no_bids[0]
+                best_yes = parse_orderbook_price(raw_yes)
+                best_no = parse_orderbook_price(raw_no)
+                if best_yes is None or best_no is None: continue
+
+                if ob_cache is not None:
+                    prev = ob_cache.get(tk)
+                    now = time.time()
+                    if prev:
+                        ts, old_yes, old_no = prev
+                        if now - ts < 180 and old_yes == best_yes and old_no == best_no:
+                            skipped += 1; continue
+                    ob_cache[tk] = (now, best_yes, best_no)
 
             total_cost = best_yes + best_no
             fee_cost = CFG["taker_fee_per_contract"] * 2 * 100
             if total_cost + fee_cost < 100:
                 profit_cents = 100 - total_cost - fee_cost
                 opportunities.append({
-                    "ticker": m["ticker"], "title": m.get("title", ""),
+                    "ticker": tk, "title": m.get("title", ""),
                     "yes_price": best_yes, "no_price": best_no,
                     "total_cost": total_cost, "profit_cents": profit_cents,
                     "type": "arbitrage",
                 })
-        except Exception: continue
+        except Exception as e:
+            MARKET_STATE.record_feed_error("kalshi")
+            continue
         time.sleep(0.1)
     if skipped: log.debug(f"  Arb scan: skipped {skipped} unchanged orderbooks")
     opportunities.sort(key=lambda x: x["profit_cents"], reverse=True)

@@ -1,5 +1,5 @@
-"""Live data pre-fetching from NWS and FRED APIs."""
-import time
+"""Live data pre-fetching from NWS, FRED, and sports APIs."""
+import time, re
 import requests as req_lib
 
 from modules.config import CFG, CITY_COORDS, FRED_SERIES, log
@@ -35,17 +35,123 @@ class DataFetcher:
         "energy": ["gas_price"],
     }
 
+    # ESPN public API endpoints (no key needed)
+    ESPN_SCOREBOARD = {
+        "nba": "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
+        "ncaam": "https://site.api.espn.com/apis/site/v2/sports/basketball/mens-college-basketball/scoreboard",
+        "nhl": "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/scoreboard",
+        "mlb": "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb/scoreboard",
+    }
+
+    def _fetch_espn_scores(self):
+        """Fetch today's games, scores, and odds from ESPN's free API."""
+        cached = self._cached("espn_scores")
+        if cached: return cached
+        all_games = []
+        for sport, url in self.ESPN_SCOREBOARD.items():
+            try:
+                r = req_lib.get(url, timeout=10)
+                if r.status_code != 200: continue
+                data = r.json()
+                events = data.get("events", [])
+                for ev in events:
+                    comp = ev.get("competitions", [{}])[0]
+                    teams = comp.get("competitors", [])
+                    if len(teams) < 2: continue
+                    home = teams[0]; away = teams[1]
+                    game = {
+                        "sport": sport,
+                        "status": comp.get("status", {}).get("type", {}).get("name", ""),
+                        "home_team": home.get("team", {}).get("displayName", ""),
+                        "away_team": away.get("team", {}).get("displayName", ""),
+                        "home_score": home.get("score", "0"),
+                        "away_score": away.get("score", "0"),
+                        "home_record": home.get("records", [{}])[0].get("summary", "") if home.get("records") else "",
+                        "away_record": away.get("records", [{}])[0].get("summary", "") if away.get("records") else "",
+                        "start_time": ev.get("date", ""),
+                        "headline": ev.get("name", ""),
+                    }
+                    # Extract odds if available
+                    odds = comp.get("odds", [{}])
+                    if odds and isinstance(odds, list) and odds[0]:
+                        o = odds[0]
+                        game["spread"] = o.get("details", "")
+                        game["over_under"] = o.get("overUnder", "")
+                    # Extract leaders (top performers)
+                    leaders = comp.get("leaders", [])
+                    for ld in leaders[:2]:
+                        cat = ld.get("name", "")
+                        entries = ld.get("leaders", [])
+                        if entries:
+                            top = entries[0]
+                            athlete = top.get("athlete", {}).get("displayName", "")
+                            val = top.get("displayValue", "")
+                            game[f"leader_{cat}"] = f"{athlete}: {val}"
+                    all_games.append(game)
+                time.sleep(0.2)
+            except Exception as e:
+                log.debug(f"ESPN {sport} fetch failed: {e}")
+        return self._set_cache("espn_scores", all_games)
+
+    def get_sports_for_market(self, market_title):
+        """Find relevant sports data for a market by matching team/player names."""
+        games = self.brief.get("sports_games", [])
+        if not games: return ""
+        title_lower = market_title.lower()
+        relevant = []
+        for g in games:
+            # Match by team name
+            home_lower = g["home_team"].lower()
+            away_lower = g["away_team"].lower()
+            # Check if any word from team name appears in market title
+            home_words = [w for w in home_lower.split() if len(w) > 3]
+            away_words = [w for w in away_lower.split() if len(w) > 3]
+            if any(w in title_lower for w in home_words + away_words):
+                relevant.append(g)
+        if not relevant: return ""
+        lines = []
+        for g in relevant[:3]:
+            line = f"  {g['away_team']} @ {g['home_team']}"
+            if g.get("status") == "STATUS_IN_PROGRESS":
+                line += f" | LIVE: {g['away_score']}-{g['home_score']}"
+            elif g.get("status") == "STATUS_FINAL":
+                line += f" | FINAL: {g['away_score']}-{g['home_score']}"
+            else:
+                line += f" | {g['start_time'][:16]}"
+            if g.get("home_record"): line += f" | Records: {g['away_record']} vs {g['home_record']}"
+            if g.get("spread"): line += f" | Spread: {g['spread']}"
+            if g.get("over_under"): line += f" | O/U: {g['over_under']}"
+            for k, v in g.items():
+                if k.startswith("leader_"): line += f" | {k.replace('leader_', '').title()}: {v}"
+            lines.append(line)
+        return "\n".join(lines)
+
     def fetch_all(self, market_categories=None):
         """Run before each scan. Populates self.brief with latest data."""
         self.brief = {}
-        self.feed_status = {"nws": False, "fred": False}
+        self.feed_status = {"nws": False, "fred": False, "sports": False}
 
         need_nws = market_categories is None or "weather" in market_categories
+        need_sports = market_categories is None or "sports" in market_categories
         need_fred_cats = set()
         if market_categories is None:
             need_fred_cats = set(self.FRED_BY_CATEGORY.keys())
         else:
             need_fred_cats = market_categories & set(self.FRED_BY_CATEGORY.keys())
+
+        # Fetch sports data (ESPN is free, no key needed)
+        if need_sports:
+            try:
+                games = self._fetch_espn_scores()
+                self.brief["sports_games"] = games
+                if games:
+                    self.feed_status["sports"] = True
+                    log.info(f"ESPN: {len(games)} games loaded")
+            except Exception as e:
+                log.warning(f"ESPN prefetch failed: {e}")
+                self.brief["sports_games"] = []
+        else:
+            self.brief["sports_games"] = []
 
         if need_nws:
             try:
@@ -161,6 +267,22 @@ class DataFetcher:
                     p = periods[0]
                     precip = f", {p['precip_pct']}% precip" if p.get('precip_pct') is not None else ""
                     lines.append(f"    {city.title()}: {p['name']} {p['temp']}°{p['temp_unit']}{precip} -- {p['short']}")
+        # Sports data from ESPN
+        games = self.brief.get("sports_games", [])
+        if games:
+            lines.append("  Live sports data (ESPN):")
+            for g in games[:20]:
+                line = f"    {g['sport'].upper()}: {g['away_team']} @ {g['home_team']}"
+                if g.get("status") == "STATUS_IN_PROGRESS":
+                    line += f" | LIVE {g['away_score']}-{g['home_score']}"
+                elif g.get("status") == "STATUS_FINAL":
+                    line += f" | FINAL {g['away_score']}-{g['home_score']}"
+                else:
+                    line += f" | {g.get('start_time', '')[:16]}"
+                if g.get("home_record"): line += f" | {g['away_record']} vs {g['home_record']}"
+                if g.get("spread"): line += f" | Line: {g['spread']}"
+                if g.get("over_under"): line += f" | O/U: {g['over_under']}"
+                lines.append(line)
         return "\n".join(lines) if lines else ""
 
     def get_weather_for_market(self, market_title):

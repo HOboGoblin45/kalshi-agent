@@ -38,6 +38,8 @@ export interface AgentState {
     current_phase: number;
   };
   scan_summary: string;
+  feed_health?: Record<string, { status: string; age_seconds: number; errors: number }>;
+  stale_markets?: number;
 }
 
 export interface Trade {

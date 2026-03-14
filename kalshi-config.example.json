@@ -1,26 +1,36 @@
 {
-  "kalshi_api_key_id": "8221f25c-a3db-473f-aa5e-06c68be49f50",
+  "_comment": "Copy this file to kalshi-config.json and fill in your credentials.",
+  "_comment2": "NEVER commit kalshi-config.json to git -- it is in .gitignore.",
+
+  "kalshi_api_key_id": "",
   "kalshi_private_key_path": "your-kalshi-key.txt",
-  "anthropic_api_key": "sk-ant-api03-YgFWeoTUFopq5qiMrRdVDiGQctHE4qp889zcfMfvUj6VJXIYxGoSVXbdoPZE6yNRuM22qbNpGusH-EJCzBnpeg-GfPIPAAA",
-  "polymarket_private_key": "0x2038b5f13adbf9d68d7387ad50a4b0d400089ca66a0319c433496422e1e17384",
-  "polymarket_api_key": "82de3feb-310d-bd87-d5ee-72468b5f51d3",
-  "polymarket_api_secret": "6f1YEHB1xPBTgZ6pAwg7LaGKLhFkGN64gSVPHbgv7l0=",
-  "polymarket_api_passphrase": "e40f8eddf8c28585406a18171a9338a1ce7b1f78df265bd18895d9f1b122a788",
-  "polymarket_funder": "0x48322f15116ADDbDeF837d8C1A9f46A2664B72aC",
-  "environment": "prod",
-  "dry_run": false,
+
+  "anthropic_api_key": "",
+
+  "polymarket_private_key": "",
+  "polymarket_api_key": "",
+  "polymarket_api_secret": "",
+  "polymarket_api_passphrase": "",
+  "polymarket_funder": "",
+
+  "environment": "demo",
+  "dry_run": true,
+
   "scan_interval_minutes": 3,
   "ai_scan_interval_multiplier": 10,
   "markets_per_scan": 40,
   "deep_dive_top_n": 3,
+
   "dashboard_port": 9000,
   "dashboard_host": "127.0.0.1",
   "dashboard_token": "",
-  "polymarket_enabled": true,
-  "cross_arb_enabled": true,
-  "quickflip_enabled": true,
+
+  "polymarket_enabled": false,
+  "cross_arb_enabled": false,
+  "quickflip_enabled": false,
   "debate_enabled": true,
   "within_arb_enabled": true,
+
   "max_bet_per_trade": 1.50,
   "max_total_exposure": 22.00,
   "max_daily_trades": 12,
@@ -28,13 +38,16 @@
   "min_confidence": 65,
   "min_edge_pct": 5,
   "kelly_fraction": 0.20,
+
   "quickflip_max_bet": 1.00,
   "quickflip_min_price": 3,
   "quickflip_max_price": 15,
   "quickflip_target_multiplier": 2.0,
+
   "min_volume": 15,
   "min_close_hours": 1.0,
   "max_close_hours": 48,
+
   "target_keywords": [],
   "category_rules": {
     "weather": ["temperature", "hurricane", "tornado", "rainfall", "snowfall", "weather", "climate", "heat", "cold", "storm", "wind", "flood"],
