@@ -38,6 +38,45 @@ def combined_similarity(title1, title2):
     return 0.6 * _jaccard_similarity(title1, title2) + 0.4 * _levenshtein_similarity(title1, title2)
 
 
+def classify_arb_quality(match, k_ob=None, p_ob=None):
+    """Classify an arbitrage opportunity by reliability.
+
+    Returns:
+        "locked": True arbitrage (high confidence match + both legs executable)
+        "soft": Likely mispricing (moderate match confidence, some execution risk)
+        "speculative": Possible disagreement trade (lower match confidence)
+        "unsafe": Should not be traded (stale data, low match quality, etc.)
+    """
+    sim = match.get("similarity", 0)
+    source = match.get("source", "computed")
+
+    # Similarity-based classification
+    if sim >= 0.95 or source == "cache":
+        match_quality = "high"
+    elif sim >= 0.85:
+        match_quality = "medium"
+    elif sim >= 0.70:
+        match_quality = "low"
+    else:
+        return "unsafe", "Match similarity too low"
+
+    # Check for stale book data
+    from modules.market_state import MARKET_STATE
+    km = match.get("kalshi", {})
+    k_ticker = km.get("ticker", "")
+    k_book = MARKET_STATE.get_book(k_ticker)
+    if k_book and k_book.is_stale:
+        return "unsafe", "Kalshi book data is stale"
+
+    # Classification
+    if match_quality == "high":
+        return "locked", "High-confidence semantic match"
+    elif match_quality == "medium":
+        return "soft", "Moderate semantic match -- verify settlement terms"
+    else:
+        return "speculative", "Low match confidence -- manual review recommended"
+
+
 def match_markets(kalshi_markets, poly_markets, threshold=0.70):
     """Match markets across platforms using title similarity.
     Uses Jaccard pre-filter to avoid expensive Levenshtein on all pairs."""
@@ -143,12 +182,22 @@ def _best_ask(asks):
 
 
 def scan_cross_platform_arbitrage(matches, kalshi_api, poly_api, fee_kalshi=0.07, fee_poly=0.02):
-    """Scan matched market pairs for cross-platform arbitrage with slippage adjustment."""
+    """Scan matched market pairs for cross-platform arbitrage with slippage adjustment.
+
+    Only labels opportunities as "arbitrage" when match quality is high enough.
+    Lower-quality matches are labeled as "soft_mispricing" for information only.
+    """
     opportunities = []
     target_contracts = max(1, int(CFG.get("cross_arb_max_cost", 10.0) * 100 / 80))
     for match in matches:
         km, pm = match["kalshi"], match["polymarket"]
         if match.get("similarity", 0) < 0.80: continue
+
+        # Classify match quality
+        arb_class, arb_reason = classify_arb_quality(match)
+        if arb_class == "unsafe":
+            log.debug(f"  Cross-arb skip {km.get('ticker', '?')}: {arb_reason}")
+            continue
         try:
             k_ob = kalshi_api.orderbook(km["ticker"])
             k_book = k_ob.get("orderbook", {})
@@ -196,6 +245,8 @@ def scan_cross_platform_arbitrage(matches, kalshi_api, poly_api, fee_kalshi=0.07
                     "p_price": _best_ask(p_no) if is_s1 else _best_ask(p_yes),
                     "similarity": match.get("similarity", 0),
                     "type": "cross_platform_arbitrage",
+                    "arb_class": arb_class,
+                    "arb_reason": arb_reason,
                 }
                 if slip:
                     opp["slippage_adjusted_profit"] = round(slip.get("avg_profit", best), 1)
@@ -211,7 +262,16 @@ def scan_cross_platform_arbitrage(matches, kalshi_api, poly_api, fee_kalshi=0.07
 
 
 def execute_cross_arb(kalshi_api, poly_api, opp, max_cost=10.0, dry_run=False):
-    """Execute both legs of a cross-platform arb."""
+    """Execute both legs of a cross-platform arb.
+
+    SAFETY: only executes "locked" arb classification by default.
+    Soft/speculative opportunities are logged but not executed.
+    """
+    arb_class = opp.get("arb_class", "speculative")
+    if arb_class not in ("locked",) and not dry_run:
+        log.info(f"  Cross-arb {opp.get('kalshi_ticker', '?')}: skipping live execution (class={arb_class})")
+        return {"success": False, "reason": f"Arb class '{arb_class}' not eligible for live execution"}
+
     cost_per_pair = opp["cost_cents"] / 100.0
     contracts = min(int(max_cost / cost_per_pair) if cost_per_pair > 0 else 0, 20)
     if contracts == 0: return {"success": False, "reason": "Zero contracts"}
