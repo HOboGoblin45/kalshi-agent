@@ -127,6 +127,9 @@ DEFAULTS = {
     "crypto_mm_enabled": False,
     "crypto_series": ["KXBTC", "KXBTCD", "KXETH"],
     "btc_volatility_pct": 0.7,  # hourly vol estimate for fair value calc
+    # ── WebSocket Real-Time Arb Trigger ──
+    "ws_arb_enabled": True,  # fire arb checks on WS book updates
+    "ws_arb_min_profit_cents": 2.0,  # minimum profit to queue a WS-detected arb
     # Weekly performance report
     "report_day": "sunday",
     "report_hour": 20,

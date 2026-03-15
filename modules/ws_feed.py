@@ -44,6 +44,7 @@ class KalshiWSFeed:
         self._msg_id = 0
         self._books: dict = {}  # ticker -> {yes: {price_str: count}, no: {price_str: count}}
         self._connected = False
+        self._arb_callback = None  # callable(ticker, book_state) for real-time arb detection
 
     @property
     def is_connected(self) -> bool:
@@ -219,6 +220,14 @@ class KalshiWSFeed:
 
         self._push_to_market_state(ticker)
 
+    def set_arb_callback(self, callback):
+        """Set a callback function for real-time arb detection on every book update.
+
+        The callback signature is: callback(ticker, book_state) where book_state
+        is the BookState object from MARKET_STATE after the update.
+        """
+        self._arb_callback = callback
+
     def _push_to_market_state(self, ticker: str):
         """Convert internal book to MARKET_STATE format."""
         if ticker not in self._books:
@@ -246,8 +255,15 @@ class KalshiWSFeed:
                 continue
 
         raw = {"yes": yes_levels, "no": no_levels}
-        MARKET_STATE.update_book(ticker, raw, source="ws")
+        book_state = MARKET_STATE.update_book(ticker, raw, source="ws")
         MARKET_STATE.record_feed_success("kalshi")
+
+        # Fire arb callback on every book update
+        if self._arb_callback and book_state:
+            try:
+                self._arb_callback(ticker, book_state)
+            except Exception:
+                pass  # Never let callback errors kill the WS feed
 
     def start(self, tickers: list):
         """Start WebSocket feed in background thread."""

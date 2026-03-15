@@ -39,6 +39,7 @@ from modules.arbitrage import (
     exit_cross_arb, should_rotate_arb, ARB_TRACKER,
     scan_arbitrage, _best_ask, _estimate_slippage, route_order, get_best_price,
     find_quickflip_candidates, get_bankroll_tier, get_dynamic_kelly, BANKROLL_TIERS,
+    check_single_market_arb, push_ws_arb, pop_ws_arbs,
 )
 from modules.dashboard import start_dashboard
 from modules.ws_feed import KalshiWSFeed
@@ -76,6 +77,14 @@ class Agent:
         self.exit_mgr = ExitManager(self.api, self.risk, self.notifier, poly_api=self.poly_api)
         self.maker_mgr = MakerOrderManager(self.api)
         self.ws_feed = KalshiWSFeed()
+        # Wire real-time arb callback on WS book updates
+        if CFG.get("ws_arb_enabled", True):
+            def _ws_arb_callback(ticker, book_state):
+                opp = check_single_market_arb(ticker, book_state)
+                if opp:
+                    push_ws_arb(opp)
+                    log.debug(f"  WS-ARB queued: {ticker} profit={opp['profit_cents']:.1f}c")
+            self.ws_feed.set_arb_callback(_ws_arb_callback)
         # Market maker (zero AI cost revenue layer)
         from modules.market_maker import MarketMaker
         self.market_maker = MarketMaker(self.api)
@@ -520,6 +529,28 @@ class Agent:
         # ══════════════════════════════════════
         # PHASE 2: WITHIN-MARKET ARBITRAGE
         # ══════════════════════════════════════
+        self._update_progress(2, "Within-Market Arb", "Draining WS arb queue...", total_phases)
+
+        # Drain WS-detected arb opportunities first (real-time, no REST needed)
+        ws_arbs = pop_ws_arbs(max_age_seconds=30)
+        if ws_arbs:
+            log.info(f"Phase 2: {len(ws_arbs)} WS-detected arb opportunities")
+            for wa in ws_arbs[:3]:
+                log.info(f"  WS-ARB: {wa['ticker']} -- yes:{wa['yes_price']:.0f}c + no:{wa['no_price']:.0f}c = {wa['total_cost']:.0f}c -- profit: {wa['profit_cents']:.1f}c")
+                try:
+                    if CFG.get("dry_run", True):
+                        log.info(f"  WS-ARB DRY-RUN: would place YES+NO on {wa['ticker']}")
+                    else:
+                        self.api.place_order(wa["ticker"], "yes", 1, int(wa["yes_price"]))
+                        self.api.place_order(wa["ticker"], "no", 1, int(wa["no_price"]))
+                    log.info(f"  WS-ARB EXECUTED: {wa['ticker']}")
+                    self.risk.record(wa["ticker"], wa.get("title", ""), "ws_arb", 1, int(wa["total_cost"]),
+                        99, int(wa["profit_cents"]), "WS Arbitrage: YES+NO < $1", 0, 0)
+                    self.notifier.notify_arbitrage(wa)
+                except Exception as ex:
+                    log.error(f"  WS-ARB failed: {ex}")
+            scan_events.append(f"Phase 2 (WS): {len(ws_arbs)} real-time arb opportunities")
+
         self._update_progress(2, "Within-Market Arb", "Scanning orderbooks...", total_phases)
         if not CFG.get("within_arb_enabled", True):
             log.info("Phase 2: SKIPPED (within_arb_enabled=false)")

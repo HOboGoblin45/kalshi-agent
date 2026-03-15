@@ -1,6 +1,7 @@
 """Cross-platform matching, arbitrage scanning, routing, and within-market arbitrage."""
 import os, json, time, datetime
 import threading
+from collections import deque
 
 from modules.config import CFG, log, parse_orderbook_price
 from modules.market_state import MARKET_STATE
@@ -69,6 +70,86 @@ class ArbPositionTracker:
 
 # Module-level singleton
 ARB_TRACKER = ArbPositionTracker()
+
+
+# ════════════════════════════════════════
+# WEBSOCKET REAL-TIME ARB TRIGGER
+# ════════════════════════════════════════
+
+# Thread-safe queue for arb opportunities detected from WS book updates
+WS_ARB_QUEUE = deque(maxlen=100)
+_ws_arb_lock = threading.Lock()
+
+
+def check_single_market_arb(ticker, book_state):
+    """Check a single market for within-market YES+NO < 100c arbitrage.
+
+    Called on every WebSocket book update. Must be fast (no API calls).
+
+    Args:
+        ticker: market ticker string
+        book_state: BookState object from MARKET_STATE with best_yes_bid, best_no_bid
+
+    Returns:
+        dict with arb details if found, else None
+    """
+    if book_state is None:
+        return None
+
+    best_yes = book_state.best_yes_bid
+    best_no = book_state.best_no_bid
+
+    if best_yes is None or best_no is None:
+        return None
+    if best_yes <= 0 or best_no <= 0:
+        return None
+
+    total_cost = best_yes + best_no
+    fee_cost = CFG.get("taker_fee_per_contract", 0.07) * 2 * 100
+    min_profit = CFG.get("ws_arb_min_profit_cents", 2.0)
+
+    if total_cost + fee_cost < 100:
+        profit_cents = 100 - total_cost - fee_cost
+        if profit_cents >= min_profit:
+            return {
+                "ticker": ticker,
+                "yes_price": best_yes,
+                "no_price": best_no,
+                "total_cost": total_cost,
+                "profit_cents": round(profit_cents, 1),
+                "type": "ws_arbitrage",
+                "detected_at": time.time(),
+            }
+    return None
+
+
+def push_ws_arb(opportunity):
+    """Push a WS-detected arb opportunity onto the queue (thread-safe)."""
+    with _ws_arb_lock:
+        # Deduplicate: don't queue if same ticker already queued within 5s
+        for existing in WS_ARB_QUEUE:
+            if (existing["ticker"] == opportunity["ticker"] and
+                    time.time() - existing["detected_at"] < 5):
+                return
+        WS_ARB_QUEUE.append(opportunity)
+
+
+def pop_ws_arbs(max_age_seconds=30):
+    """Pop all WS arb opportunities from the queue, filtering stale ones.
+
+    Returns:
+        list of arb opportunity dicts, newest first
+    """
+    results = []
+    now = time.time()
+    with _ws_arb_lock:
+        while WS_ARB_QUEUE:
+            opp = WS_ARB_QUEUE.popleft()
+            if now - opp["detected_at"] <= max_age_seconds:
+                results.append(opp)
+    # Newest first (most likely to still be valid)
+    results.sort(key=lambda x: x["detected_at"], reverse=True)
+    return results
 
 
 def should_rotate_arb(current_positions, new_opportunities,
