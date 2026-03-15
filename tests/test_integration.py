@@ -616,5 +616,80 @@ class TestScanPhaseOrder(unittest.TestCase):
         self.assertIn("poly_api.balance()", content)
 
 
+class TestDualServerDeployment(unittest.TestCase):
+    """Verify dual-server role-based initialization and scan guards."""
+
+    def _read_agent(self):
+        with open("kalshi-agent.py") as f:
+            return f.read()
+
+    def _read_config(self):
+        with open("modules/config.py") as f:
+            return f.read()
+
+    def test_role_kalshi_skips_poly_init(self):
+        """Kalshi role disables polymarket_enabled and cross_arb_enabled."""
+        content = self._read_agent()
+        # Role 'kalshi' forces polymarket off
+        self.assertIn('role == "kalshi"', content)
+        self.assertIn('CFG["polymarket_enabled"] = False', content)
+        self.assertIn('CFG["cross_arb_enabled"] = False', content)
+
+    def test_role_polymarket_skips_kalshi_init(self):
+        """Polymarket role skips Kalshi API creation."""
+        content = self._read_agent()
+        # Role 'polymarket' skips Kalshi API
+        self.assertIn('role != "polymarket"', content)
+        self.assertIn("self.api = None", content)
+        # Market maker and WS feed disabled for polymarket role
+        self.assertIn('CFG["mm_enabled"] = False', content)
+        self.assertIn('CFG["ws_arb_enabled"] = False', content)
+
+    def test_role_full_initializes_both(self):
+        """Full role (default) initializes both Kalshi and Polymarket."""
+        content = self._read_agent()
+        # Full role creates Kalshi API
+        self.assertIn("self.api = KalshiAPI()", content)
+        # Polymarket init guarded by poly_enabled (which is True in full mode with keys)
+        self.assertIn("self.poly_api = PolymarketAPI()", content)
+
+    def test_scan_kalshi_only_no_poly_phases(self):
+        """Kalshi-only scan guards Polymarket phases via poly_enabled=False."""
+        content = self._read_agent()
+        # Phase 1 cross-arb checks poly_enabled
+        self.assertIn("self.poly_enabled and poly_mkts and self.poly_api", content)
+        # Balance check guards self.api
+        self.assertIn("if self.api:", content)
+
+    def test_scan_polymarket_only_no_kalshi_phases(self):
+        """Polymarket-only role skips Kalshi-dependent phases."""
+        content = self._read_agent()
+        # Phase 2 within-market arb checks self.api
+        self.assertIn("not self.api or not CFG.get(\"within_arb_enabled\"", content)
+        # Phase 4 AI debate skips without self.api
+        self.assertIn("not self.api:", content)
+        # Market loading guarded
+        self.assertIn("self.cache.get() if self.cache else []", content)
+
+    def test_config_defaults_include_server_role(self):
+        """Config DEFAULTS includes server_role and peer_server_url."""
+        cfg_content = self._read_config()
+        self.assertIn('"server_role"', cfg_content)
+        self.assertIn('"full"', cfg_content)
+        self.assertIn('"peer_server_url"', cfg_content)
+
+    def test_cli_role_flag_exists(self):
+        """CLI --role flag is defined."""
+        content = self._read_agent()
+        self.assertIn("--role", content)
+        self.assertIn('choices=["full", "kalshi", "polymarket"]', content)
+
+    def test_credential_validation_role_aware(self):
+        """Credential validation adjusts based on server role."""
+        cfg_content = self._read_config()
+        self.assertIn('role == "polymarket"', cfg_content)
+        self.assertIn("polymarket_private_key", cfg_content)
+
+
 if __name__ == "__main__":
     unittest.main()

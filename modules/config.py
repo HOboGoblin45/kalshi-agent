@@ -97,6 +97,9 @@ DEFAULTS = {
     "dashboard_token": "",
     "dashboard_username": "",  # HTTP Basic Auth (empty = disabled)
     "dashboard_password": "",
+    # ── Dual-Server Deployment ──
+    "server_role": "full",  # "full", "kalshi", or "polymarket"
+    "peer_server_url": "",  # URL of the other server's dashboard (for future cross-server coordination)
     # SAFETY: dry_run is ALWAYS True by default. Only explicit --live flag can disable.
     "dry_run": True,
     "fred_api_key": "",
@@ -248,10 +251,18 @@ def load_config(config_path=None, live_mode=False):
         SHARED["dry_run"] = CFG["dry_run"]
 
     # Validate: refuse to boot with missing required credentials
-    if not CFG["kalshi_api_key_id"] or not CFG["anthropic_api_key"]:
-        log.error("Missing required credentials: kalshi_api_key_id and anthropic_api_key")
-        log.error("Set via config file, environment variables, or --config flag")
-        raise SystemExit(1)
+    role = CFG.get("server_role", "full")
+    if role == "polymarket":
+        # Polymarket-only: only need polymarket keys
+        if not CFG.get("polymarket_private_key"):
+            log.error("Missing required credentials for polymarket role: polymarket_private_key")
+            raise SystemExit(1)
+    else:
+        # full or kalshi role: need Kalshi + Anthropic keys
+        if not CFG["kalshi_api_key_id"] or not CFG["anthropic_api_key"]:
+            log.error("Missing required credentials: kalshi_api_key_id and anthropic_api_key")
+            log.error("Set via config file, environment variables, or --config flag")
+            raise SystemExit(1)
 
     # Log mode
     mode_str = "DRY-RUN (safe)" if CFG["dry_run"] else "LIVE TRADING"

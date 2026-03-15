@@ -52,8 +52,14 @@ from modules.combinatorial import CombinatorialScanner
 # ════════════════════════════════════════
 class Agent:
     def __init__(self):
-        self.api = KalshiAPI(); self.debate = DebateEngine()
-        self.risk = RiskMgr(); self.cache = MarketCache(self.api)
+        self.role = CFG.get("server_role", "full")
+        # Kalshi API: skip for polymarket-only role
+        self.api = None
+        if self.role != "polymarket":
+            self.api = KalshiAPI()
+        self.debate = DebateEngine()
+        self.risk = RiskMgr()
+        self.cache = MarketCache(self.api) if self.api else None
         self.data = DataFetcher()
         self.calibration = CalibrationTracker()
         self.notifier = Notifier()
@@ -77,20 +83,20 @@ class Agent:
                 log.error(f"Polymarket init failed: {e} -- running Kalshi-only")
                 self.poly_enabled = False
         self.exit_mgr = ExitManager(self.api, self.risk, self.notifier, poly_api=self.poly_api)
-        self.maker_mgr = MakerOrderManager(self.api)
+        self.maker_mgr = MakerOrderManager(self.api) if self.api else None
         self.ws_feed = KalshiWSFeed()
         # Wire real-time arb callback on WS book updates
-        if CFG.get("ws_arb_enabled", True):
+        if CFG.get("ws_arb_enabled", True) and self.api:
             def _ws_arb_callback(ticker, book_state):
                 opp = check_single_market_arb(ticker, book_state)
                 if opp:
                     push_ws_arb(opp)
                     log.debug(f"  WS-ARB queued: {ticker} profit={opp['profit_cents']:.1f}c")
             self.ws_feed.set_arb_callback(_ws_arb_callback)
-        # Market maker (zero AI cost revenue layer)
+        # Market maker (zero AI cost revenue layer) -- requires Kalshi API
         from modules.market_maker import MarketMaker
-        self.market_maker = MarketMaker(self.api)
-        if CFG.get("mm_enabled", False):
+        self.market_maker = MarketMaker(self.api) if self.api else None
+        if self.market_maker and CFG.get("mm_enabled", False):
             self.market_maker.start()
         self._ws_started = False
         # News-triggered AI scanning
@@ -104,12 +110,15 @@ class Agent:
 
     def _startup_check(self):
         """Verify critical dependencies before starting."""
-        checks = []
-        try:
-            bal = self.api.balance()
-            checks.append(f"Kalshi balance: ${bal:.2f}")
-        except Exception as e:
-            checks.append(f"WARNING: Kalshi API failed: {e}")
+        checks = [f"Server role: {self.role.upper()}"]
+        if self.api:
+            try:
+                bal = self.api.balance()
+                checks.append(f"Kalshi balance: ${bal:.2f}")
+            except Exception as e:
+                checks.append(f"WARNING: Kalshi API failed: {e}")
+        else:
+            checks.append("Kalshi API: disabled (polymarket-only role)")
         if self.poly_enabled and self.poly_api:
             try:
                 pbal = self.poly_api.balance()
@@ -311,7 +320,9 @@ class Agent:
 
         # ── BALANCE CHECK ──
         self._update_progress(0, "Initializing", "Checking balances...", total_phases)
-        bal = self.api.balance(); SHARED["balance"] = bal
+        bal = 0.0
+        if self.api:
+            bal = self.api.balance(); SHARED["balance"] = bal
         poly_bal = 0.0
         if self.poly_enabled and self.poly_api:
             try: poly_bal = self.poly_api.balance()
@@ -323,7 +334,8 @@ class Agent:
         # Check calibration outcomes for settled markets
         self._check_calibration_outcomes()
         # Manage resting maker orders (cancel stale, reprice)
-        self.maker_mgr.check_and_manage()
+        if self.maker_mgr:
+            self.maker_mgr.check_and_manage()
         if combined_bal < 1:
             SHARED["status"] = "Low balance"
             scan_events.append("Scan aborted: combined balance below $1")
@@ -357,7 +369,7 @@ class Agent:
 
         # ── LOAD MARKETS ──
         self._update_progress(0, "Initializing", "Loading markets...", total_phases)
-        mkts = self.cache.get()
+        mkts = self.cache.get() if self.cache else []
         # Score & rank all markets, then cache the best ones for the dashboard
         scored_short, scored_long = filter_and_rank(mkts)
         all_scored = scored_short + scored_long
@@ -383,8 +395,8 @@ class Agent:
         for m in mkts:
             if "platform" not in m: m["platform"] = "kalshi"
 
-        # ── START WEBSOCKET FEED (first scan only) ──
-        if not self._ws_started and all_scored:
+        # ── START WEBSOCKET FEED (first scan only, Kalshi only) ──
+        if self.api and not self._ws_started and all_scored:
             ws_tickers = [m["ticker"] for m in all_scored[:30] if m.get("ticker")]
             if ws_tickers:
                 self.ws_feed.start(ws_tickers)
@@ -605,8 +617,11 @@ class Agent:
             scan_events.append(f"Phase 2 (WS): {len(ws_arbs)} real-time arb opportunities")
 
         self._update_progress(2, "Within-Market Arb", "Scanning orderbooks...", total_phases)
-        if not CFG.get("within_arb_enabled", True):
-            log.info("Phase 2: SKIPPED (within_arb_enabled=false)")
+        if not self.api or not CFG.get("within_arb_enabled", True):
+            if not self.api:
+                log.info("Phase 2: SKIPPED (no Kalshi API in this role)")
+            else:
+                log.info("Phase 2: SKIPPED (within_arb_enabled=false)")
             arb_opps = []
             scan_events.append("Phase 2: Skipped (disabled)")
         else:
@@ -780,6 +795,11 @@ class Agent:
             return
 
         existing = set()
+        if not self.api:
+            log.info("Phase 4: SKIPPED (no Kalshi API in this role)")
+            scan_events.append("Phase 4: Skipped (polymarket-only role)")
+            self._finish_scan(bal, poly_bal, scan_type, scan_events)
+            return
         try:
             pos_list = self.api.positions()
             for p in pos_list:
@@ -1054,7 +1074,7 @@ class Agent:
                     "edge": r["edge"], "confidence": r["confidence"],
                     "bull_prob": r["bull_prob"], "bear_prob": r["bear_prob"], "evidence": r["evidence"],
                     "platform": trade_platform})
-                bal = self.api.balance()
+                if self.api: bal = self.api.balance()
                 if self.poly_api: poly_bal = self.poly_api.balance()
                 with SHARED_LOCK:
                     SHARED["balance"] = bal; SHARED["poly_balance"] = poly_bal
@@ -1080,7 +1100,7 @@ class Agent:
                     for p in ARB_TRACKER.get_open_positions()
                 ],
             }
-            if hasattr(self, 'market_maker'):
+            if hasattr(self, 'market_maker') and self.market_maker:
                 SHARED["_mm_summary"] = self.market_maker.summary()
             if hasattr(self, 'news_trigger'):
                 SHARED["_news_trigger_summary"] = self.news_trigger.summary()
@@ -1143,6 +1163,8 @@ def main():
                     help="Max markets to test in forward backtest (0=all)")
     ap.add_argument("--mm", action="store_true",
                     help="Enable market making on crypto bracket markets (zero AI cost)")
+    ap.add_argument("--role", choices=["full", "kalshi", "polymarket"], default=None,
+                    help="Server role: full (both platforms), kalshi (Kalshi-only), polymarket (Polymarket-only)")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Force dry-run mode (default)")
     mode.add_argument("--live", action="store_true", help="Enable live order placement (requires explicit intent)")
@@ -1153,10 +1175,32 @@ def main():
     live_mode = args.live and not args.dry_run
     load_config(config_path=args.config, live_mode=live_mode)
 
+    # Apply server role from CLI (overrides config file)
+    if args.role:
+        CFG["server_role"] = args.role
+    role = CFG.get("server_role", "full")
+    if role not in ("full", "kalshi", "polymarket"):
+        log.error(f"Invalid server_role: {role}. Must be full, kalshi, or polymarket.")
+        raise SystemExit(1)
+    if role != "full":
+        log.info(f"Server role: {role.upper()}")
+
     # Auto-enable Polymarket if keys are provided
     if CFG.get("polymarket_private_key") and not CFG.get("polymarket_enabled"):
         CFG["polymarket_enabled"] = True
         log.info("Polymarket auto-enabled (private key detected)")
+
+    # Role-based overrides: disable platforms not needed for this role
+    if role == "kalshi":
+        CFG["polymarket_enabled"] = False
+        CFG["cross_arb_enabled"] = False
+    elif role == "polymarket":
+        # Polymarket-only: force polymarket on, disable Kalshi-dependent features
+        CFG["polymarket_enabled"] = True
+        CFG["cross_arb_enabled"] = False
+        CFG["mm_enabled"] = False
+        CFG["crypto_mm_enabled"] = False
+        CFG["ws_arb_enabled"] = False
 
     # Enable market making via CLI flag
     if args.mm:
@@ -1276,7 +1320,8 @@ def main():
         if not args.no_dashboard:
             start_dashboard(); print(f"\n  Dashboard: http://localhost:{CFG.get('dashboard_port', 9000)}\n")
         with SHARED_LOCK:
-            SHARED["balance"] = a.api.balance()
+            if a.api:
+                SHARED["balance"] = a.api.balance()
             if a.poly_enabled and a.poly_api:
                 try: SHARED["poly_balance"] = a.poly_api.balance()
                 except Exception: pass
@@ -1284,7 +1329,7 @@ def main():
         else: a.run()
     except KeyboardInterrupt:
         log.info("\nStopped.")
-        if hasattr(a, 'market_maker') and a.market_maker.is_active():
+        if hasattr(a, 'market_maker') and a.market_maker and a.market_maker.is_active():
             a.market_maker.stop()
     except Exception as e: log.error(f"Fatal: {e}"); traceback.print_exc(); sys.exit(1)
 
