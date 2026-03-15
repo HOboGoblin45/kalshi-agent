@@ -130,6 +130,10 @@ DEFAULTS = {
     # ── WebSocket Real-Time Arb Trigger ──
     "ws_arb_enabled": True,  # fire arb checks on WS book updates
     "ws_arb_min_profit_cents": 2.0,  # minimum profit to queue a WS-detected arb
+    # ── News-Triggered AI ──
+    "news_trigger_enabled": False,  # replace fixed-timer AI with RSS keyword matching
+    "news_poll_interval_seconds": 60,
+    "news_cooldown_seconds": 300,  # min time between triggers for same category
     # Weekly performance report
     "report_day": "sunday",
     "report_hour": 20,

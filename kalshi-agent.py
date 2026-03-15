@@ -43,6 +43,7 @@ from modules.arbitrage import (
 )
 from modules.dashboard import start_dashboard
 from modules.ws_feed import KalshiWSFeed
+from modules.news_trigger import NewsTrigger
 
 
 # ════════════════════════════════════════
@@ -91,6 +92,13 @@ class Agent:
         if CFG.get("mm_enabled", False):
             self.market_maker.start()
         self._ws_started = False
+        # News-triggered AI scanning
+        self.news_trigger = NewsTrigger(
+            category_rules=CFG.get("category_rules", {}),
+            poll_interval_seconds=CFG.get("news_poll_interval_seconds", 60),
+            cooldown_seconds=CFG.get("news_cooldown_seconds", 300))
+        if CFG.get("news_trigger_enabled", False):
+            self.news_trigger.start()
 
     @staticmethod
     def _clean_title(m):
@@ -223,7 +231,9 @@ class Agent:
 
     def _is_ai_scan_due(self):
         mult = CFG.get("ai_scan_interval_multiplier", 5)
-        return self._scan_number % mult == 0
+        timer_due = self._scan_number % mult == 0
+        news_due = self.news_trigger.has_triggers() if CFG.get("news_trigger_enabled", False) else False
+        return timer_due or news_due
 
     def _update_progress(self, phase_num, phase_name, step="", total_phases=4):
         pct = int((phase_num / total_phases) * 100) if total_phases > 0 else 0
@@ -667,6 +677,17 @@ class Agent:
             self._finish_scan(bal, poly_bal, scan_type, scan_events)
             return
         self._update_progress(4, "AI Analysis", "Running debate engine...", total_phases)
+        # Check for news-triggered categories
+        news_triggered_cats = {}
+        if CFG.get("news_trigger_enabled", False):
+            news_triggered_cats = self.news_trigger.get_triggered_categories()
+            if news_triggered_cats:
+                log.info(f"  NEWS-TRIGGERED AI: categories={list(news_triggered_cats.keys())}")
+                for cat, items in news_triggered_cats.items():
+                    for item in items[:2]:
+                        log.info(f"    {cat}: '{item.title[:60]}'")
+                scan_events.append(f"Phase 4: News-triggered categories: {', '.join(news_triggered_cats.keys())}")
+
         log.info("Phase 4: AI directional trading...")
         short_term, long_term = filter_and_rank(mkts)
         log.info(f"Short-term (<{CFG['max_close_hours']}h): {len(short_term)} | Long-term: {len(long_term)}")
@@ -676,8 +697,25 @@ class Agent:
             try: self.data.expand_nws_for_markets(weather_mkts)
             except Exception as e: log.debug(f"NWS expansion failed: {e}")
 
-        batch = short_term[:CFG["markets_per_scan"]]
-        if long_term: batch.extend(long_term[:max(10, CFG["markets_per_scan"] - len(batch))])
+        # If news-triggered, prioritize markets in triggered categories
+        if news_triggered_cats:
+            triggered_set = set(news_triggered_cats.keys())
+            triggered_markets = [m for m in short_term + long_term
+                                 if m.get("_category") in triggered_set]
+            if triggered_markets:
+                log.info(f"  News-triggered: prioritizing {len(triggered_markets)} markets in {triggered_set}")
+                # Put triggered markets first, then fill remaining slots
+                other = [m for m in short_term if m.get("_category") not in triggered_set]
+                batch = triggered_markets[:CFG["markets_per_scan"]]
+                remaining = CFG["markets_per_scan"] - len(batch)
+                if remaining > 0:
+                    batch.extend(other[:remaining])
+            else:
+                batch = short_term[:CFG["markets_per_scan"]]
+                if long_term: batch.extend(long_term[:max(10, CFG["markets_per_scan"] - len(batch))])
+        else:
+            batch = short_term[:CFG["markets_per_scan"]]
+            if long_term: batch.extend(long_term[:max(10, CFG["markets_per_scan"] - len(batch))])
         if not batch:
             SHARED["status"] = "Idle -- no targets"
             scan_events.append("Phase 4: No market targets found")
@@ -987,6 +1025,8 @@ class Agent:
             }
             if hasattr(self, 'market_maker'):
                 SHARED["_mm_summary"] = self.market_maker.summary()
+            if hasattr(self, 'news_trigger'):
+                SHARED["_news_trigger_summary"] = self.news_trigger.summary()
         s = self.risk.summary()
         combined = (kalshi_bal or 0) + (poly_bal or 0)
         log.info(f"\nScan done. {s['day_trades']} trades, exposure {s['exposure']}, combined balance ${combined:.2f}")
@@ -1024,6 +1064,7 @@ class Agent:
         finally:
             self.stop_event.set()
             self.ws_feed.stop()
+            self.news_trigger.stop()
 
 
 def main():
