@@ -44,6 +44,7 @@ from modules.arbitrage import (
 from modules.dashboard import start_dashboard
 from modules.ws_feed import KalshiWSFeed
 from modules.news_trigger import NewsTrigger
+from modules.combinatorial import CombinatorialScanner
 
 
 # ════════════════════════════════════════
@@ -591,6 +592,20 @@ class Agent:
                     log.error(f"  ARB failed: {ex}")
         else:
             log.info("  No within-market arbitrage found (normal)")
+
+        # Combinatorial arbitrage scan (threshold + mutual exclusion)
+        try:
+            combo_scanner = CombinatorialScanner()
+            combo_groups = combo_scanner.group_related_markets(mkts)
+            combo_arbs = combo_scanner.scan_all(combo_groups)
+            if combo_arbs:
+                log.info(f"  COMBO-ARB: {len(combo_arbs)} combinatorial arb opportunities")
+                for ca in combo_arbs[:3]:
+                    log.info(f"    {ca['type']}: {ca.get('description', '')[:60]} profit={ca['profit_cents']:.1f}c")
+                scan_events.append(f"Phase 2 (combo): {len(combo_arbs)} combinatorial arb opportunities")
+                SHARED["_arb_opportunities"] = SHARED.get("_arb_opportunities", 0) + len(combo_arbs)
+        except Exception as e:
+            log.debug(f"Combinatorial arb scan failed: {e}")
 
         # ══════════════════════════════════════
         # PHASE 3: QUICK-FLIP SCAN
