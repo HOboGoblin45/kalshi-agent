@@ -12,6 +12,9 @@ kalshi-config.local.json
 *.key.txt
 your-kalshi-key.txt
 
+# One-time setup scripts with credential handling
+polymarket-setup.py
+
 # Trade data and caches (operator-specific)
 kalshi-trades.json
 kalshi-calibration.json

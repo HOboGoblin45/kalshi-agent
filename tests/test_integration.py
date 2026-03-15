@@ -557,5 +557,139 @@ class TestKellyMathUpgrades(unittest.TestCase):
         self.assertLessEqual(capped_cost, max_allowed)
 
 
+class TestScanPhaseOrder(unittest.TestCase):
+    """Verify all scan phases are present and correctly ordered."""
+
+    def test_all_phases_present(self):
+        with open("kalshi-agent.py") as f:
+            content = f.read()
+        # All phases must appear in order
+        phases = [
+            "PHASE 0",  # Market Making
+            "PHASE 1",  # Cross-Platform Arb
+            "PHASE 2",  # Within-Market Arb
+            "PHASE 3",  # Quick-Flip
+            "PHASE 4",  # AI-Driven Directional Trading
+        ]
+        last_pos = -1
+        for phase in phases:
+            pos = content.find(phase)
+            self.assertGreater(pos, last_pos,
+                f"{phase} not found or out of order (pos={pos}, last={last_pos})")
+            last_pos = pos
+
+    def test_kill_switch_on_shutdown(self):
+        """Verify market maker stop() is called on KeyboardInterrupt."""
+        with open("kalshi-agent.py") as f:
+            content = f.read()
+        self.assertIn("market_maker.stop()", content)
+
+    def test_news_trigger_wired(self):
+        """Verify news trigger is initialized and checked."""
+        with open("kalshi-agent.py") as f:
+            content = f.read()
+        self.assertIn("NewsTrigger", content)
+        self.assertIn("news_trigger.has_triggers", content)
+
+    def test_ws_arb_wired(self):
+        """Verify WebSocket arb trigger is wired."""
+        with open("kalshi-agent.py") as f:
+            content = f.read()
+        self.assertIn("check_single_market_arb", content)
+        self.assertIn("push_ws_arb", content)
+        self.assertIn("pop_ws_arbs", content)
+
+    def test_combinatorial_scanner_wired(self):
+        """Verify combinatorial arb scanner is integrated."""
+        with open("kalshi-agent.py") as f:
+            content = f.read()
+        self.assertIn("CombinatorialScanner", content)
+
+    def test_polymarket_fully_integrated(self):
+        """Verify Polymarket is integrated into all trading paths."""
+        with open("kalshi-agent.py") as f:
+            content = f.read()
+        self.assertIn("PolymarketAPI", content)
+        self.assertIn("poly_enabled", content)
+        self.assertIn("poly_mkts", content)
+        self.assertIn("execute_cross_arb(self.api, self.poly_api", content)
+        self.assertIn("poly_api.balance()", content)
+
+
+class TestDualServerDeployment(unittest.TestCase):
+    """Verify dual-server role-based initialization and scan guards."""
+
+    def _read_agent(self):
+        with open("kalshi-agent.py") as f:
+            return f.read()
+
+    def _read_config(self):
+        with open("modules/config.py") as f:
+            return f.read()
+
+    def test_role_kalshi_skips_poly_init(self):
+        """Kalshi role disables polymarket_enabled and cross_arb_enabled."""
+        content = self._read_agent()
+        # Role 'kalshi' forces polymarket off
+        self.assertIn('role == "kalshi"', content)
+        self.assertIn('CFG["polymarket_enabled"] = False', content)
+        self.assertIn('CFG["cross_arb_enabled"] = False', content)
+
+    def test_role_polymarket_skips_kalshi_init(self):
+        """Polymarket role skips Kalshi API creation."""
+        content = self._read_agent()
+        # Role 'polymarket' skips Kalshi API
+        self.assertIn('role != "polymarket"', content)
+        self.assertIn("self.api = None", content)
+        # Market maker and WS feed disabled for polymarket role
+        self.assertIn('CFG["mm_enabled"] = False', content)
+        self.assertIn('CFG["ws_arb_enabled"] = False', content)
+
+    def test_role_full_initializes_both(self):
+        """Full role (default) initializes both Kalshi and Polymarket."""
+        content = self._read_agent()
+        # Full role creates Kalshi API
+        self.assertIn("self.api = KalshiAPI()", content)
+        # Polymarket init guarded by poly_enabled (which is True in full mode with keys)
+        self.assertIn("self.poly_api = PolymarketAPI()", content)
+
+    def test_scan_kalshi_only_no_poly_phases(self):
+        """Kalshi-only scan guards Polymarket phases via poly_enabled=False."""
+        content = self._read_agent()
+        # Phase 1 cross-arb checks poly_enabled
+        self.assertIn("self.poly_enabled and poly_mkts and self.poly_api", content)
+        # Balance check guards self.api
+        self.assertIn("if self.api:", content)
+
+    def test_scan_polymarket_only_no_kalshi_phases(self):
+        """Polymarket-only role skips Kalshi-dependent phases."""
+        content = self._read_agent()
+        # Phase 2 within-market arb checks self.api
+        self.assertIn("not self.api or not CFG.get(\"within_arb_enabled\"", content)
+        # Phase 4 AI debate skips without self.api
+        self.assertIn("not self.api:", content)
+        # Market loading guarded
+        self.assertIn("self.cache.get() if self.cache else []", content)
+
+    def test_config_defaults_include_server_role(self):
+        """Config DEFAULTS includes server_role and peer_server_url."""
+        cfg_content = self._read_config()
+        self.assertIn('"server_role"', cfg_content)
+        self.assertIn('"full"', cfg_content)
+        self.assertIn('"peer_server_url"', cfg_content)
+
+    def test_cli_role_flag_exists(self):
+        """CLI --role flag is defined."""
+        content = self._read_agent()
+        self.assertIn("--role", content)
+        self.assertIn('choices=["full", "kalshi", "polymarket"]', content)
+
+    def test_credential_validation_role_aware(self):
+        """Credential validation adjusts based on server role."""
+        cfg_content = self._read_config()
+        self.assertIn('role == "polymarket"', cfg_content)
+        self.assertIn("polymarket_private_key", cfg_content)
+
+
 if __name__ == "__main__":
     unittest.main()

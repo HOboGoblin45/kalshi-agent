@@ -87,6 +87,13 @@ class MarketMaker:
         if not self._active:
             return
 
+        # Check total exposure limit
+        total_exposure = self.get_total_exposure()
+        max_exposure = CFG.get("mm_max_total_exposure_cents", 20000)
+        if total_exposure >= max_exposure:
+            log.info(f"  MM {ticker}: total exposure {total_exposure} >= max {max_exposure}, skipping")
+            return
+
         spread = spread_cents or CFG.get("mm_default_spread_cents", 4)
         quote_size = size or CFG.get("mm_default_quote_size", 5)
 

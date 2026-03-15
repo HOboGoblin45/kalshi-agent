@@ -16,6 +16,10 @@
   "environment": "demo",
   "dry_run": true,
 
+  "_comment_role": "Dual-server deployment: full (both), kalshi (Kalshi-only), polymarket (Poly-only)",
+  "server_role": "full",
+  "peer_server_url": "",
+
   "scan_interval_minutes": 3,
   "ai_scan_interval_multiplier": 10,
   "markets_per_scan": 40,
@@ -24,6 +28,8 @@
   "dashboard_port": 9000,
   "dashboard_host": "127.0.0.1",
   "dashboard_token": "",
+  "dashboard_username": "",
+  "dashboard_password": "",
 
   "polymarket_enabled": false,
   "cross_arb_enabled": false,
@@ -47,6 +53,31 @@
   "min_volume": 15,
   "min_close_hours": 1.0,
   "max_close_hours": 48,
+
+  "_comment_arb": "Cross-platform arbitrage settings",
+  "arb_parallel_execution": false,
+  "arb_rotation_min_improvement_cents": 3.0,
+  "arb_max_rotations_per_scan": 1,
+
+  "_comment_mm": "Market making on crypto bracket markets (zero AI cost)",
+  "mm_enabled": false,
+  "mm_default_spread_cents": 4,
+  "mm_default_quote_size": 5,
+  "mm_max_inventory_per_market": 20,
+  "mm_max_total_exposure_cents": 20000,
+
+  "_comment_crypto": "Crypto bracket market discovery",
+  "crypto_mm_enabled": false,
+  "crypto_series": ["KXBTC", "KXBTCD", "KXETH"],
+
+  "_comment_ws": "WebSocket real-time arb trigger",
+  "ws_arb_enabled": true,
+  "ws_arb_min_profit_cents": 2.0,
+
+  "_comment_news": "News-triggered AI (replace fixed-timer with RSS keyword matching)",
+  "news_trigger_enabled": false,
+  "news_poll_interval_seconds": 60,
+  "news_cooldown_seconds": 300,
 
   "target_keywords": [],
   "category_rules": {
