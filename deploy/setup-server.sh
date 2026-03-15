@@ -17,8 +17,14 @@ echo "[1/8] Updating system packages..."
 apt update && apt upgrade -y
 
 # ── Install dependencies ──
-echo "[2/8] Installing Python, Caddy, and tools..."
+echo "[2/8] Installing Python, Node.js, Caddy, and tools..."
 apt install -y python3 python3-pip python3-venv git ufw caddy curl
+
+# Install Node.js for frontend build
+if ! command -v node &>/dev/null; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y nodejs
+fi
 
 # ── Create dedicated user ──
 echo "[3/8] Creating kalshi user..."
