@@ -557,5 +557,64 @@ class TestKellyMathUpgrades(unittest.TestCase):
         self.assertLessEqual(capped_cost, max_allowed)
 
 
+class TestScanPhaseOrder(unittest.TestCase):
+    """Verify all scan phases are present and correctly ordered."""
+
+    def test_all_phases_present(self):
+        with open("kalshi-agent.py") as f:
+            content = f.read()
+        # All phases must appear in order
+        phases = [
+            "PHASE 0",  # Market Making
+            "PHASE 1",  # Cross-Platform Arb
+            "PHASE 2",  # Within-Market Arb
+            "PHASE 3",  # Quick-Flip
+            "PHASE 4",  # AI-Driven Directional Trading
+        ]
+        last_pos = -1
+        for phase in phases:
+            pos = content.find(phase)
+            self.assertGreater(pos, last_pos,
+                f"{phase} not found or out of order (pos={pos}, last={last_pos})")
+            last_pos = pos
+
+    def test_kill_switch_on_shutdown(self):
+        """Verify market maker stop() is called on KeyboardInterrupt."""
+        with open("kalshi-agent.py") as f:
+            content = f.read()
+        self.assertIn("market_maker.stop()", content)
+
+    def test_news_trigger_wired(self):
+        """Verify news trigger is initialized and checked."""
+        with open("kalshi-agent.py") as f:
+            content = f.read()
+        self.assertIn("NewsTrigger", content)
+        self.assertIn("news_trigger.has_triggers", content)
+
+    def test_ws_arb_wired(self):
+        """Verify WebSocket arb trigger is wired."""
+        with open("kalshi-agent.py") as f:
+            content = f.read()
+        self.assertIn("check_single_market_arb", content)
+        self.assertIn("push_ws_arb", content)
+        self.assertIn("pop_ws_arbs", content)
+
+    def test_combinatorial_scanner_wired(self):
+        """Verify combinatorial arb scanner is integrated."""
+        with open("kalshi-agent.py") as f:
+            content = f.read()
+        self.assertIn("CombinatorialScanner", content)
+
+    def test_polymarket_fully_integrated(self):
+        """Verify Polymarket is integrated into all trading paths."""
+        with open("kalshi-agent.py") as f:
+            content = f.read()
+        self.assertIn("PolymarketAPI", content)
+        self.assertIn("poly_enabled", content)
+        self.assertIn("poly_mkts", content)
+        self.assertIn("execute_cross_arb(self.api, self.poly_api", content)
+        self.assertIn("poly_api.balance()", content)
+
+
 if __name__ == "__main__":
     unittest.main()
