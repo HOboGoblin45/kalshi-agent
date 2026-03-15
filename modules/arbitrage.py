@@ -755,6 +755,7 @@ def scan_arbitrage(api, markets, ob_cache=None):
 def find_quickflip_candidates(markets, min_price=3, max_price=15, min_volume=50):
     """Find cheap contracts (3-15c) with decent volume for quick-flip scalping."""
     candidates = []
+    target_mult = CFG.get("quickflip_target_multiplier", 2.0)
     for m in markets:
         yc = m.get("yes_bid", m.get("last_price", 50)) or 50
         vol = m.get("volume", 0) or 0
@@ -762,16 +763,16 @@ def find_quickflip_candidates(markets, min_price=3, max_price=15, min_volume=50)
         if min_price <= yc <= max_price and vol >= min_volume and hrs > 2:
             candidates.append({
                 "market": m, "side": "yes", "entry_price": yc,
-                "target_price": min(yc * 2, 50), "stop_price": max(1, yc - 2),
-                "potential_roi": round((min(yc * 2, 50) - yc) / yc * 100, 0),
+                "target_price": min(yc * target_mult, 50), "stop_price": max(1, yc - 2),
+                "potential_roi": round((min(yc * target_mult, 50) - yc) / yc * 100, 0),
                 "platform": m.get("platform", "kalshi"), "hours_left": hrs,
             })
         no_price = 100 - yc
         if min_price <= no_price <= max_price and vol >= min_volume and hrs > 2:
             candidates.append({
                 "market": m, "side": "no", "entry_price": no_price,
-                "target_price": min(no_price * 2, 50), "stop_price": max(1, no_price - 2),
-                "potential_roi": round((min(no_price * 2, 50) - no_price) / no_price * 100, 0),
+                "target_price": min(no_price * target_mult, 50), "stop_price": max(1, no_price - 2),
+                "potential_roi": round((min(no_price * target_mult, 50) - no_price) / no_price * 100, 0),
                 "platform": m.get("platform", "kalshi"), "hours_left": hrs,
             })
     candidates.sort(key=lambda x: x["potential_roi"], reverse=True)

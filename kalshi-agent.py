@@ -502,7 +502,8 @@ class Agent:
                         poly_fee=CFG.get("polymarket_fee_per_contract", 0.02),
                         min_improvement_cents=min_improve)
 
-                    for rot in rotations[:1]:  # Only rotate into the single best opportunity
+                    max_rotations = CFG.get("arb_max_rotations_per_scan", 1)
+                    for rot in rotations[:max_rotations]:
                         exit_pos = rot["exit_position"]
                         enter_opp = rot["enter_opportunity"]
                         log.info(f"  ROTATION: Exit {exit_pos['kalshi_ticker']} "

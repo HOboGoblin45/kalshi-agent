@@ -64,8 +64,7 @@ DEFAULTS = {
     "quickflip_min_price": 3,
     "quickflip_max_price": 15,
     "quickflip_target_multiplier": 2.0,
-    # Compounding / aggressive mode
-    "aggressive_mode": False,
+    # Compounding mode
     "compounding_enabled": False,
     # Strategy toggles
     "debate_enabled": True,

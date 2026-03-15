@@ -157,10 +157,9 @@ class BracketEvent:
 class CryptoMarketDiscovery:
     """Discover and track active crypto bracket events on Kalshi."""
 
-    SERIES = ["KXBTC", "KXBTCD", "KXETH", "KXSOL"]
-
     def __init__(self, api):
         self.api = api
+        self.series = CFG.get("crypto_series", ["KXBTC", "KXBTCD", "KXETH", "KXSOL"])
         self.events = {}  # event_ticker -> BracketEvent
         self._lock = threading.Lock()
 
@@ -169,7 +168,7 @@ class CryptoMarketDiscovery:
         Returns list of BracketEvent objects.
         """
         discovered = []
-        for series in self.SERIES:
+        for series in self.series:
             try:
                 d = self.api._req("GET",
                     f"/events?series_ticker={series}&status=open&limit=10")
