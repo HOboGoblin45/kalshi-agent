@@ -88,6 +88,11 @@ DEFAULTS = {
     "taker_fee_per_contract": 0.07,
     "trade_log": "kalshi-trades.json",
     "calibration_log": "kalshi-calibration.json",
+    "calibration_file": "kalshi-calibration.json",
+    "trades_file": "kalshi-trades.json",
+    "max_bankroll": 100.0,
+    "quickflip_timeout_hours": 4,
+    "category_kelly_caps": None,  # uses built-in defaults from scoring.py
     "dashboard_port": 9000,
     "dashboard_host": "127.0.0.1",
     "dashboard_token": "",
