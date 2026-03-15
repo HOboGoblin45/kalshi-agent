@@ -100,6 +100,38 @@ class Agent:
             cooldown_seconds=CFG.get("news_cooldown_seconds", 300))
         if CFG.get("news_trigger_enabled", False):
             self.news_trigger.start()
+        self._startup_check()
+
+    def _startup_check(self):
+        """Verify critical dependencies before starting."""
+        checks = []
+        try:
+            bal = self.api.balance()
+            checks.append(f"Kalshi balance: ${bal:.2f}")
+        except Exception as e:
+            checks.append(f"WARNING: Kalshi API failed: {e}")
+        if self.poly_enabled and self.poly_api:
+            try:
+                pbal = self.poly_api.balance()
+                checks.append(f"Polymarket balance: ${pbal:.2f}")
+            except Exception as e:
+                checks.append(f"WARNING: Polymarket API failed: {e}")
+        if CFG.get("anthropic_api_key"):
+            checks.append("Anthropic API key: configured")
+        else:
+            checks.append("WARNING: No Anthropic API key -- AI debate disabled")
+        if CFG.get("mm_enabled"):
+            checks.append("Market maker: ENABLED")
+        else:
+            checks.append("Market maker: disabled")
+        if CFG.get("news_trigger_enabled"):
+            checks.append("News trigger: ENABLED")
+        else:
+            checks.append("News trigger: disabled (using fixed AI timer)")
+        if CFG.get("ws_arb_enabled", True):
+            checks.append("WebSocket arb trigger: ENABLED")
+        for check in checks:
+            log.info(f"  Startup: {check}")
 
     @staticmethod
     def _clean_title(m):
