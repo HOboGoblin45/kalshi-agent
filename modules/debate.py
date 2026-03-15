@@ -24,7 +24,8 @@ class DebateEngine:
         if e < self._gap: time.sleep(self._gap - e)
         self._last = time.time()
 
-    def _call(self, prompt, max_tok=1200, retries=2, use_search=True):
+    def _call(self, prompt, max_tok=1200, retries=2, use_search=True, system_prompt=None):
+        """Call Claude API. If system_prompt is provided, it's sent with cache_control for prompt caching."""
         self._throttle()
         tools = [{"type": "web_search_20250305", "name": "web_search"}] if use_search else []
         for attempt in range(retries):
@@ -33,12 +34,31 @@ class DebateEngine:
                     kwargs = dict(model="claude-sonnet-4-20250514", max_tokens=max_tok,
                         messages=[{"role": "user", "content": prompt}])
                     if tools: kwargs["tools"] = tools
+                    # Prompt caching: send system prompt with cache_control
+                    if system_prompt:
+                        kwargs["system"] = [
+                            {"type": "text", "text": system_prompt,
+                             "cache_control": {"type": "ephemeral"}}
+                        ]
                     resp = self.client.messages.create(**kwargs)
+                    # Track cache hits for monitoring
+                    if hasattr(resp, 'usage'):
+                        cache_read = getattr(resp.usage, 'cache_read_input_tokens', 0) or 0
+                        cache_create = getattr(resp.usage, 'cache_creation_input_tokens', 0) or 0
+                        if cache_read > 0:
+                            log.debug(f"  Prompt cache HIT: {cache_read} tokens read from cache")
+                        elif cache_create > 0:
+                            log.debug(f"  Prompt cache MISS: {cache_create} tokens written to cache")
                     return "\n".join(b.text for b in resp.content if hasattr(b, "text"))
                 else:
                     body = {"model": "claude-sonnet-4-20250514", "max_tokens": max_tok,
                             "messages": [{"role": "user", "content": prompt}]}
                     if tools: body["tools"] = tools
+                    if system_prompt:
+                        body["system"] = [
+                            {"type": "text", "text": system_prompt,
+                             "cache_control": {"type": "ephemeral"}}
+                        ]
                     r = req_lib.post("https://api.anthropic.com/v1/messages",
                         headers={"Content-Type": "application/json", "x-api-key": self.api_key,
                                  "anthropic-version": "2023-06-01"},
@@ -184,17 +204,13 @@ FEES: ~$0.07/contract{live_section}"""
             "crypto": "Search for current price of the relevant cryptocurrency. Check recent trend and any major news/regulatory events.",
         }.get(cat, "Search for the most recent data relevant to this market.")
 
-        bull_prompt = f"""You are a conviction-driven research analyst. Make the STRONGEST possible case that this market resolves YES. You are the BULL in a bull-vs-bear debate.
-
-{market_context}
-
-REQUIRED RESEARCH: {cat_instruction}
+        # Cacheable system prompt: stable role + rules that repeat across debates
+        bull_system = """You are a conviction-driven research analyst. Make the STRONGEST possible case that this market resolves YES. You are the BULL in a bull-vs-bear debate.
 
 Rules:
 - If VERIFIED LIVE DATA is shown above, use it as your PRIMARY evidence -- it's from official government sources
 - You MUST cite at least one specific data point (not "I believe" -- give numbers, dates, sources)
 - Search the web for ADDITIONAL supporting context beyond the live data
-- Start from the market price ({yc}%) and argue why reality is HIGHER
 - Give a probability FLOOR (the minimum even if bear arguments are strong)
 
 Structure your response:
@@ -205,21 +221,20 @@ PROBABILITY_FLOOR: [minimum reasonable YES probability as integer]
 PROBABILITY: [your YES probability estimate as integer 1-99]
 CATALYSTS: [what could push probability higher in the next 24h]"""
 
+        bull_prompt = f"""{market_context}
+
+REQUIRED RESEARCH: {cat_instruction}
+Start from the market price ({yc}%) and argue why reality is HIGHER."""
+
         log.debug(f"BULL prompt ({len(bull_prompt)} chars): {bull_prompt[:300]}...")
-        bull_text = self._call(bull_prompt, 1000)
+        bull_text = self._call(bull_prompt, 1000, system_prompt=bull_system)
         bull_prob = self._extract_prob(bull_text, "PROBABILITY:", 60)
         bull_floor = self._extract_prob(bull_text, "PROBABILITY_FLOOR:", 30)
         log.info(f"    [BULL] prob={bull_prob}% floor={bull_floor}%")
 
         # ── STEP 2: BEAR CASE ──
         log.info("    [BEAR] Researching NO case...")
-        bear_prompt = f"""You are a skeptical risk analyst. Your job is ADVERSARIAL TRUTH-SEEKING. The bull researcher just presented their case -- you must DESTROY their weakest arguments with counter-evidence.
-
-{market_context}
-CATEGORY: {cat}
-
-THE BULL'S CASE:
-{bull_text[:600]}
+        bear_system = """You are a skeptical risk analyst. Your job is ADVERSARIAL TRUTH-SEEKING. The bull researcher just presented their case -- you must DESTROY their weakest arguments with counter-evidence.
 
 YOUR MISSION:
 1. Search for COUNTER-EVIDENCE that contradicts the bull's key data point
@@ -237,29 +252,21 @@ PROBABILITY_CEILING: [maximum reasonable YES probability as integer]
 PROBABILITY: [your YES probability estimate as integer 1-99]
 RISK_FACTORS: [what could go wrong for YES holders in the next 24h]"""
 
+        bear_prompt = f"""{market_context}
+CATEGORY: {cat}
+
+THE BULL'S CASE:
+{bull_text[:600]}"""
+
         log.debug(f"BEAR prompt ({len(bear_prompt)} chars): {bear_prompt[:300]}...")
-        bear_text = self._call(bear_prompt, 1000)
+        bear_text = self._call(bear_prompt, 1000, system_prompt=bear_system)
         bear_prob = self._extract_prob(bear_text, "PROBABILITY:", 40)
         bear_ceiling = self._extract_prob(bear_text, "PROBABILITY_CEILING:", 70)
         log.info(f"    [BEAR] prob={bear_prob}% ceiling={bear_ceiling}%")
 
         # ── STEP 3: SYNTHESIS ──
         log.info("    [JUDGE] Synthesizing debate...")
-        synthesis_prompt = f"""You are a senior portfolio manager making the FINAL trade decision. You've heard a structured bull-vs-bear debate. YOUR MONEY IS ON THE LINE.
-
-{market_context}
-
-BULL CASE (prob={bull_prob}%, floor={bull_floor}%):
-{bull_text[:700]}
-
-BEAR CASE (prob={bear_prob}%, ceiling={bear_ceiling}%):
-{bear_text[:700]}
-
-DEBATE METRICS:
-- Bull estimate: {bull_prob}% | Bear estimate: {bear_prob}%
-- Debate spread: {abs(bull_prob - bear_prob)}% (>30% = extreme disagreement to trade)
-- Bull floor: {bull_floor}% | Bear ceiling: {bear_ceiling}%
-- Market price: {yc}c (implies {yc}%)
+        synth_system = """You are a senior portfolio manager making the FINAL trade decision. You've heard a structured bull-vs-bear debate. YOUR MONEY IS ON THE LINE.
 
 DECISION FRAMEWORK (disciplined edge extraction):
 1. EVIDENCE QUALITY: Which side has harder data? Official sources (NWS, FRED, ESPN, BLS) > news articles > opinion. Go with concrete numbers.
@@ -280,8 +287,22 @@ RISK: [the strongest counter-argument you couldn't dismiss]
 PRICE_CENTS: [integer 1-99, your bid price]
 CONTRACTS: [integer 1-20]"""
 
+        synthesis_prompt = f"""{market_context}
+
+BULL CASE (prob={bull_prob}%, floor={bull_floor}%):
+{bull_text[:700]}
+
+BEAR CASE (prob={bear_prob}%, ceiling={bear_ceiling}%):
+{bear_text[:700]}
+
+DEBATE METRICS:
+- Bull estimate: {bull_prob}% | Bear estimate: {bear_prob}%
+- Debate spread: {abs(bull_prob - bear_prob)}% (>30% = extreme disagreement to trade)
+- Bull floor: {bull_floor}% | Bear ceiling: {bear_ceiling}%
+- Market price: {yc}c (implies {yc}%)"""
+
         log.debug(f"SYNTHESIS prompt ({len(synthesis_prompt)} chars): {synthesis_prompt[:300]}...")
-        synth_text = self._call(synthesis_prompt, 800, use_search=False)
+        synth_text = self._call(synthesis_prompt, 800, use_search=False, system_prompt=synth_system)
         log.debug(f"SYNTHESIS response: {synth_text[:500]}")
         result = self._parse_synthesis(synth_text, yc, bull_prob, bear_prob)
         result["bull_prob"] = bull_prob
