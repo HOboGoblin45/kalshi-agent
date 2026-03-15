@@ -3,15 +3,22 @@ Polymarket CLOB Setup — Run this ONCE to derive your API credentials.
 
 Usage:
   pip install py-clob-client
+  export POLYMARKET_PRIVATE_KEY=0xYOUR_KEY_HERE
   python polymarket-setup.py
 
 This will print your apiKey, secret, and passphrase.
 Save them in kalshi-config.json.
 """
+import os, sys
 from py_clob_client.client import ClobClient
 
 # Your wallet private key from Polymarket Settings > Private Key
-PRIVATE_KEY = "0x2038b5f13adbf9d68d7387ad50a4b0d400089ca66a0319c433496422e1e17384"
+PRIVATE_KEY = os.environ.get("POLYMARKET_PRIVATE_KEY", "")
+if not PRIVATE_KEY:
+    print("Error: Set POLYMARKET_PRIVATE_KEY environment variable")
+    print("  export POLYMARKET_PRIVATE_KEY=0xYOUR_KEY_HERE")
+    print("  python polymarket-setup.py")
+    sys.exit(1)
 
 # Step 1: Create client with just the private key (L1 auth)
 client = ClobClient(
