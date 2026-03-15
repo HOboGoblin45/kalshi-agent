@@ -414,6 +414,15 @@ class Agent:
                                 fair_value_cents=fair_value,
                                 event_ticker=event.event_ticker)
 
+                # Check for filled orders
+                new_fills = self.market_maker.check_fills()
+                if new_fills:
+                    log.info(f"  MM: {len(new_fills)} new fills detected")
+                    for f in new_fills:
+                        self.notifier.send(
+                            f"MM Fill: {f['ticker']}",
+                            f"{f['side']} {f['size']}x @{f['price_cents']}c")
+
                 mm_summary = self.market_maker.summary()
                 scan_events.append(
                     f"MM: {mm_summary['markets_quoted']} markets, "

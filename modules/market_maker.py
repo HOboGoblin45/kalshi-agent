@@ -257,6 +257,61 @@ class MarketMaker:
         with self._lock:
             return sum(abs(v) for v in self._inventory.values())
 
+    def check_fills(self):
+        """Poll the API for filled orders and update inventory.
+
+        Checks all resting quotes to see if they've been filled.
+        Returns list of newly detected fills.
+        """
+        new_fills = []
+        dry_run = CFG.get("dry_run", True)
+
+        with self._lock:
+            for ticker, sides in list(self._quotes.items()):
+                for side, quote in list(sides.items()):
+                    if quote.status != "resting" or not quote.order_id:
+                        continue
+                    if quote.order_id.startswith("dry-"):
+                        continue  # can't check dry-run orders
+
+                    try:
+                        order = self.api.get_order(quote.order_id)
+                        status = order.get("order", {}).get("status", "")
+                        remaining = order.get("order", {}).get("remaining_count", quote.size)
+
+                        filled_count = quote.size - remaining
+
+                        if filled_count > 0 and quote.status == "resting":
+                            # Record the fill
+                            fill = {
+                                "ticker": ticker,
+                                "side": side,
+                                "price_cents": quote.price_cents,
+                                "size": filled_count,
+                                "time": time.time(),
+                                "order_id": quote.order_id,
+                            }
+                            self._fills.append(fill)
+                            new_fills.append(fill)
+
+                            # Update inventory
+                            if side == "yes":
+                                self._inventory[ticker] += filled_count
+                            else:
+                                self._inventory[ticker] -= filled_count
+
+                            log.info(f"  MM FILL DETECTED: {ticker} {side} "
+                                     f"{quote.price_cents}c x{filled_count} "
+                                     f"| inventory now: {self._inventory[ticker]}")
+
+                        if status in ("filled", "canceled", "cancelled"):
+                            quote.status = "filled" if status == "filled" else "cancelled"
+
+                    except Exception as e:
+                        log.debug(f"  MM fill check failed for {quote.order_id}: {e}")
+
+        return new_fills
+
     def summary(self):
         """Return market maker status summary for dashboard."""
         with self._lock:
