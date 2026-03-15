@@ -9,7 +9,7 @@ SECRET_FIELDS = frozenset({
     "polymarket_private_key", "polymarket_api_key",
     "polymarket_api_secret", "polymarket_api_passphrase",
     "polymarket_funder",
-    "email_password", "dashboard_token",
+    "email_password", "dashboard_token", "dashboard_password",
     "fred_api_key",
 })
 
@@ -96,6 +96,8 @@ DEFAULTS = {
     "dashboard_port": 9000,
     "dashboard_host": "127.0.0.1",
     "dashboard_token": "",
+    "dashboard_username": "",  # HTTP Basic Auth (empty = disabled)
+    "dashboard_password": "",
     # SAFETY: dry_run is ALWAYS True by default. Only explicit --live flag can disable.
     "dry_run": True,
     "fred_api_key": "",
