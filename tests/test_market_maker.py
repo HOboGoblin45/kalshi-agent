@@ -236,6 +236,64 @@ class TestMarketMaker(unittest.TestCase):
         self.assertEqual(summary["markets_quoted"], 1)
 
 
+    def test_check_fills_detects_filled_order(self):
+        """check_fills should detect when a resting order has been filled."""
+        # Set up a real-looking order_id (not dry-run)
+        self.mm.start()
+        self.mm.quote_market("KXBTC-FILL", fair_value_cents=50)
+
+        # Manually set the quote to have a real order_id
+        with self.mm._lock:
+            for side, quote in self.mm._quotes.get("KXBTC-FILL", {}).items():
+                quote.order_id = f"real-{side}-order-123"
+
+        # Mock API response: order fully filled
+        self.mock_api.get_order.return_value = {
+            "order": {"status": "filled", "remaining_count": 0}
+        }
+
+        fills = self.mm.check_fills()
+        self.assertEqual(len(fills), 2)  # YES + NO both filled
+
+    def test_check_fills_partial(self):
+        """check_fills should handle partial fills correctly."""
+        self.mm.start()
+        self.mm.quote_market("KXBTC-PARTIAL", fair_value_cents=50)
+
+        with self.mm._lock:
+            yes_q = self.mm._quotes.get("KXBTC-PARTIAL", {}).get("yes")
+            if yes_q:
+                yes_q.order_id = "real-yes-order-456"
+                yes_q.size = 5
+            no_q = self.mm._quotes.get("KXBTC-PARTIAL", {}).get("no")
+            if no_q:
+                no_q.order_id = "real-no-order-789"
+                no_q.size = 5
+
+        # Mock: YES partially filled (3 of 5), NO not filled
+        def mock_get_order(order_id):
+            if "yes" in order_id:
+                return {"order": {"status": "resting", "remaining_count": 2}}
+            return {"order": {"status": "resting", "remaining_count": 5}}
+        self.mock_api.get_order.side_effect = mock_get_order
+
+        fills = self.mm.check_fills()
+        self.assertEqual(len(fills), 1)  # Only YES partially filled
+        self.assertEqual(fills[0]["size"], 3)
+        # Inventory should reflect the fill
+        inv = self.mm.get_inventory()
+        self.assertEqual(inv.get("KXBTC-PARTIAL", 0), 3)
+
+    def test_check_fills_skips_dry_run(self):
+        """check_fills should skip dry-run orders."""
+        self.mm.start()
+        self.mm.quote_market("KXBTC-DRY", fair_value_cents=50)
+        # Dry-run quotes have "dry-" prefix, should be skipped
+        fills = self.mm.check_fills()
+        self.assertEqual(len(fills), 0)
+        self.mock_api.get_order.assert_not_called()
+
+
 class TestCryptoMarketDiscovery(unittest.TestCase):
     def test_get_mm_candidates_filters(self):
         mock_api = MagicMock()

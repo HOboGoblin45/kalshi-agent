@@ -1,5 +1,5 @@
 """Web dashboard + React frontend server for monitoring agent activity."""
-import json, os, time, threading, mimetypes
+import json, os, time, threading, mimetypes, base64
 import http.server
 from urllib.parse import unquote
 import hmac
@@ -48,6 +48,35 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
             return True
         return origin in self._allowed_origins()
 
+    def _check_basic_auth(self):
+        """Check HTTP Basic Auth if dashboard_username is configured.
+
+        Returns True if auth passes or is not configured.
+        """
+        username = CFG.get("dashboard_username", "")
+        password = CFG.get("dashboard_password", "")
+        if not username:
+            return True  # Basic Auth not configured, allow all
+
+        auth_header = self.headers.get("Authorization", "")
+        if not auth_header or not auth_header.startswith("Basic "):
+            return False
+
+        try:
+            decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
+            provided_user, _, provided_pass = decoded.partition(":")
+            return (hmac.compare_digest(provided_user, username) and
+                    hmac.compare_digest(provided_pass, password))
+        except Exception:
+            return False
+
+    def _send_auth_required(self):
+        """Send 401 response requesting Basic Auth credentials."""
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="Kalshi Dashboard"')
+        self._cors()
+        self.end_headers()
+
     def _require_toggle_auth(self):
         origin = self.headers.get("Origin", "")
         if not self._is_local_origin(origin):
@@ -73,6 +102,10 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        # Basic Auth check for all routes
+        if not self._check_basic_auth():
+            return self._send_auth_required()
+
         # API routes
         if self.path == '/api/state': return self._json(self._state())
         if self.path == '/api/markets': return self._json(self._markets())
@@ -93,6 +126,9 @@ class DashHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        if not self._check_basic_auth():
+            return self._send_auth_required()
+
         if self.path == '/api/toggle':
             if not self._require_toggle_auth():
                 self.send_response(403)

@@ -32,6 +32,9 @@ rsync -avz --delete \
 # Install any new dependencies
 ssh "$SERVER" "cd ~/kalshi-bot && venv/bin/pip install -q -r requirements.txt"
 
+# Build React frontend
+ssh "$SERVER" "cd ~/kalshi-bot && npm install --production=false && npm run build"
+
 # Restart the service
 ssh "$SERVER" "sudo systemctl restart kalshi-bot"
 

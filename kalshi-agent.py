@@ -39,9 +39,12 @@ from modules.arbitrage import (
     exit_cross_arb, should_rotate_arb, ARB_TRACKER,
     scan_arbitrage, _best_ask, _estimate_slippage, route_order, get_best_price,
     find_quickflip_candidates, get_bankroll_tier, get_dynamic_kelly, BANKROLL_TIERS,
+    check_single_market_arb, push_ws_arb, pop_ws_arbs,
 )
 from modules.dashboard import start_dashboard
 from modules.ws_feed import KalshiWSFeed
+from modules.news_trigger import NewsTrigger
+from modules.combinatorial import CombinatorialScanner
 
 
 # ════════════════════════════════════════
@@ -76,12 +79,27 @@ class Agent:
         self.exit_mgr = ExitManager(self.api, self.risk, self.notifier, poly_api=self.poly_api)
         self.maker_mgr = MakerOrderManager(self.api)
         self.ws_feed = KalshiWSFeed()
+        # Wire real-time arb callback on WS book updates
+        if CFG.get("ws_arb_enabled", True):
+            def _ws_arb_callback(ticker, book_state):
+                opp = check_single_market_arb(ticker, book_state)
+                if opp:
+                    push_ws_arb(opp)
+                    log.debug(f"  WS-ARB queued: {ticker} profit={opp['profit_cents']:.1f}c")
+            self.ws_feed.set_arb_callback(_ws_arb_callback)
         # Market maker (zero AI cost revenue layer)
         from modules.market_maker import MarketMaker
         self.market_maker = MarketMaker(self.api)
         if CFG.get("mm_enabled", False):
             self.market_maker.start()
         self._ws_started = False
+        # News-triggered AI scanning
+        self.news_trigger = NewsTrigger(
+            category_rules=CFG.get("category_rules", {}),
+            poll_interval_seconds=CFG.get("news_poll_interval_seconds", 60),
+            cooldown_seconds=CFG.get("news_cooldown_seconds", 300))
+        if CFG.get("news_trigger_enabled", False):
+            self.news_trigger.start()
 
     @staticmethod
     def _clean_title(m):
@@ -214,7 +232,9 @@ class Agent:
 
     def _is_ai_scan_due(self):
         mult = CFG.get("ai_scan_interval_multiplier", 5)
-        return self._scan_number % mult == 0
+        timer_due = self._scan_number % mult == 0
+        news_due = self.news_trigger.has_triggers() if CFG.get("news_trigger_enabled", False) else False
+        return timer_due or news_due
 
     def _update_progress(self, phase_num, phase_name, step="", total_phases=4):
         pct = int((phase_num / total_phases) * 100) if total_phases > 0 else 0
@@ -394,6 +414,15 @@ class Agent:
                                 fair_value_cents=fair_value,
                                 event_ticker=event.event_ticker)
 
+                # Check for filled orders
+                new_fills = self.market_maker.check_fills()
+                if new_fills:
+                    log.info(f"  MM: {len(new_fills)} new fills detected")
+                    for f in new_fills:
+                        self.notifier.send(
+                            f"MM Fill: {f['ticker']}",
+                            f"{f['side']} {f['size']}x @{f['price_cents']}c")
+
                 mm_summary = self.market_maker.summary()
                 scan_events.append(
                     f"MM: {mm_summary['markets_quoted']} markets, "
@@ -520,6 +549,28 @@ class Agent:
         # ══════════════════════════════════════
         # PHASE 2: WITHIN-MARKET ARBITRAGE
         # ══════════════════════════════════════
+        self._update_progress(2, "Within-Market Arb", "Draining WS arb queue...", total_phases)
+
+        # Drain WS-detected arb opportunities first (real-time, no REST needed)
+        ws_arbs = pop_ws_arbs(max_age_seconds=30)
+        if ws_arbs:
+            log.info(f"Phase 2: {len(ws_arbs)} WS-detected arb opportunities")
+            for wa in ws_arbs[:3]:
+                log.info(f"  WS-ARB: {wa['ticker']} -- yes:{wa['yes_price']:.0f}c + no:{wa['no_price']:.0f}c = {wa['total_cost']:.0f}c -- profit: {wa['profit_cents']:.1f}c")
+                try:
+                    if CFG.get("dry_run", True):
+                        log.info(f"  WS-ARB DRY-RUN: would place YES+NO on {wa['ticker']}")
+                    else:
+                        self.api.place_order(wa["ticker"], "yes", 1, int(wa["yes_price"]))
+                        self.api.place_order(wa["ticker"], "no", 1, int(wa["no_price"]))
+                    log.info(f"  WS-ARB EXECUTED: {wa['ticker']}")
+                    self.risk.record(wa["ticker"], wa.get("title", ""), "ws_arb", 1, int(wa["total_cost"]),
+                        99, int(wa["profit_cents"]), "WS Arbitrage: YES+NO < $1", 0, 0)
+                    self.notifier.notify_arbitrage(wa)
+                except Exception as ex:
+                    log.error(f"  WS-ARB failed: {ex}")
+            scan_events.append(f"Phase 2 (WS): {len(ws_arbs)} real-time arb opportunities")
+
         self._update_progress(2, "Within-Market Arb", "Scanning orderbooks...", total_phases)
         if not CFG.get("within_arb_enabled", True):
             log.info("Phase 2: SKIPPED (within_arb_enabled=false)")
@@ -550,6 +601,20 @@ class Agent:
                     log.error(f"  ARB failed: {ex}")
         else:
             log.info("  No within-market arbitrage found (normal)")
+
+        # Combinatorial arbitrage scan (threshold + mutual exclusion)
+        try:
+            combo_scanner = CombinatorialScanner()
+            combo_groups = combo_scanner.group_related_markets(mkts)
+            combo_arbs = combo_scanner.scan_all(combo_groups)
+            if combo_arbs:
+                log.info(f"  COMBO-ARB: {len(combo_arbs)} combinatorial arb opportunities")
+                for ca in combo_arbs[:3]:
+                    log.info(f"    {ca['type']}: {ca.get('description', '')[:60]} profit={ca['profit_cents']:.1f}c")
+                scan_events.append(f"Phase 2 (combo): {len(combo_arbs)} combinatorial arb opportunities")
+                SHARED["_arb_opportunities"] = SHARED.get("_arb_opportunities", 0) + len(combo_arbs)
+        except Exception as e:
+            log.debug(f"Combinatorial arb scan failed: {e}")
 
         # ══════════════════════════════════════
         # PHASE 3: QUICK-FLIP SCAN
@@ -636,6 +701,17 @@ class Agent:
             self._finish_scan(bal, poly_bal, scan_type, scan_events)
             return
         self._update_progress(4, "AI Analysis", "Running debate engine...", total_phases)
+        # Check for news-triggered categories
+        news_triggered_cats = {}
+        if CFG.get("news_trigger_enabled", False):
+            news_triggered_cats = self.news_trigger.get_triggered_categories()
+            if news_triggered_cats:
+                log.info(f"  NEWS-TRIGGERED AI: categories={list(news_triggered_cats.keys())}")
+                for cat, items in news_triggered_cats.items():
+                    for item in items[:2]:
+                        log.info(f"    {cat}: '{item.title[:60]}'")
+                scan_events.append(f"Phase 4: News-triggered categories: {', '.join(news_triggered_cats.keys())}")
+
         log.info("Phase 4: AI directional trading...")
         short_term, long_term = filter_and_rank(mkts)
         log.info(f"Short-term (<{CFG['max_close_hours']}h): {len(short_term)} | Long-term: {len(long_term)}")
@@ -645,8 +721,25 @@ class Agent:
             try: self.data.expand_nws_for_markets(weather_mkts)
             except Exception as e: log.debug(f"NWS expansion failed: {e}")
 
-        batch = short_term[:CFG["markets_per_scan"]]
-        if long_term: batch.extend(long_term[:max(10, CFG["markets_per_scan"] - len(batch))])
+        # If news-triggered, prioritize markets in triggered categories
+        if news_triggered_cats:
+            triggered_set = set(news_triggered_cats.keys())
+            triggered_markets = [m for m in short_term + long_term
+                                 if m.get("_category") in triggered_set]
+            if triggered_markets:
+                log.info(f"  News-triggered: prioritizing {len(triggered_markets)} markets in {triggered_set}")
+                # Put triggered markets first, then fill remaining slots
+                other = [m for m in short_term if m.get("_category") not in triggered_set]
+                batch = triggered_markets[:CFG["markets_per_scan"]]
+                remaining = CFG["markets_per_scan"] - len(batch)
+                if remaining > 0:
+                    batch.extend(other[:remaining])
+            else:
+                batch = short_term[:CFG["markets_per_scan"]]
+                if long_term: batch.extend(long_term[:max(10, CFG["markets_per_scan"] - len(batch))])
+        else:
+            batch = short_term[:CFG["markets_per_scan"]]
+            if long_term: batch.extend(long_term[:max(10, CFG["markets_per_scan"] - len(batch))])
         if not batch:
             SHARED["status"] = "Idle -- no targets"
             scan_events.append("Phase 4: No market targets found")
@@ -956,6 +1049,8 @@ class Agent:
             }
             if hasattr(self, 'market_maker'):
                 SHARED["_mm_summary"] = self.market_maker.summary()
+            if hasattr(self, 'news_trigger'):
+                SHARED["_news_trigger_summary"] = self.news_trigger.summary()
         s = self.risk.summary()
         combined = (kalshi_bal or 0) + (poly_bal or 0)
         log.info(f"\nScan done. {s['day_trades']} trades, exposure {s['exposure']}, combined balance ${combined:.2f}")
@@ -993,6 +1088,7 @@ class Agent:
         finally:
             self.stop_event.set()
             self.ws_feed.stop()
+            self.news_trigger.stop()
 
 
 def main():

@@ -9,7 +9,7 @@ SECRET_FIELDS = frozenset({
     "polymarket_private_key", "polymarket_api_key",
     "polymarket_api_secret", "polymarket_api_passphrase",
     "polymarket_funder",
-    "email_password", "dashboard_token",
+    "email_password", "dashboard_token", "dashboard_password",
     "fred_api_key",
 })
 
@@ -88,9 +88,16 @@ DEFAULTS = {
     "taker_fee_per_contract": 0.07,
     "trade_log": "kalshi-trades.json",
     "calibration_log": "kalshi-calibration.json",
+    "calibration_file": "kalshi-calibration.json",
+    "trades_file": "kalshi-trades.json",
+    "max_bankroll": 100.0,
+    "quickflip_timeout_hours": 4,
+    "category_kelly_caps": None,  # uses built-in defaults from scoring.py
     "dashboard_port": 9000,
     "dashboard_host": "127.0.0.1",
     "dashboard_token": "",
+    "dashboard_username": "",  # HTTP Basic Auth (empty = disabled)
+    "dashboard_password": "",
     # SAFETY: dry_run is ALWAYS True by default. Only explicit --live flag can disable.
     "dry_run": True,
     "fred_api_key": "",
@@ -122,6 +129,13 @@ DEFAULTS = {
     "crypto_mm_enabled": False,
     "crypto_series": ["KXBTC", "KXBTCD", "KXETH"],
     "btc_volatility_pct": 0.7,  # hourly vol estimate for fair value calc
+    # ── WebSocket Real-Time Arb Trigger ──
+    "ws_arb_enabled": True,  # fire arb checks on WS book updates
+    "ws_arb_min_profit_cents": 2.0,  # minimum profit to queue a WS-detected arb
+    # ── News-Triggered AI ──
+    "news_trigger_enabled": False,  # replace fixed-timer AI with RSS keyword matching
+    "news_poll_interval_seconds": 60,
+    "news_cooldown_seconds": 300,  # min time between triggers for same category
     # Weekly performance report
     "report_day": "sunday",
     "report_hour": 20,
